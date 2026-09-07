@@ -4,6 +4,10 @@ This repository owns the current Luminumbra game's code and content. The reusabl
 
 The initial repository supplies independently versioned, verified game asset packs for engine v0.3.0 acceptance. Game code will move here after the engine release is verified and the revised implementation roadmap is approved. That extraction has not been implemented yet.
 
+See the [coordinated roadmap](docs/roadmap.md) for populated milestones, current
+verification and release status, and the [accepted engine/game boundary](docs/engine-game-boundary.md)
+for reusable modules and script/component/data authoring without rebuilding engine C++.
+
 Public art packs contain redistributable source/runtime content, provenance, conversion instructions and checksums. Private audio recordings and Steam SDK payloads are excluded. Public engine software releases remain source-only.
 
 ## Tree Small 02
