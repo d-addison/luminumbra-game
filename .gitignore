@@ -2,3 +2,8 @@
 /staging/
 /dist/
 *.part
+/build/
+/tools/fit_leaf_cards
+/tools/fit_leaf_cards.exe
+*.obj
+__pycache__/
