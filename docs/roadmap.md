@@ -8,18 +8,23 @@ There are no assigned due dates or invented completion percentages.
 
 - **Released:** engine v0.2.1; separate game Tree Small 02 source/runtime packs
   `tree-small-02-source-v1.0.0` and `tree-small-02-runtime-v1.0.0`.
-- **Implemented, awaiting final integration/acceptance:** v0.3 format retirement,
-  saved-world enumeration/loading, noise precision repairs and authored material/UV
-  conversion. Additional acquisition/tree/culling/no-UI work is in the candidate
-  workspace. Engine recovery revision is `f18098d`; game pack revision is
-  `addab429`. These identities do not describe a final verified v0.3 release.
-- **Merged:** format-retirement work is in `devel`. Rendering/integration PR
+- **Implemented, awaiting final integration/acceptance:** candidate `4ca9215`
+  includes asynchronous catalog validation, saved-world selection/loading, content acquisition,
+  culling/no-UI and rendering repairs, local-player feet-origin correction, explicit
+  MSVC terrain arithmetic and validated source-release inventory. Game source and
+  runtime pack tags target `9f3a66d` and `addab429`; their independent verification is
+  documented in game `ecdcc9c`. None is a final verified engine v0.3 release.
+- **Merged:** format retirement and optional Blender authoring fixtures/service mock
+  are in `devel` (`fdb16a8`). The mock is planning evidence, not a production engine
+  build/preview service. Rendering/integration PR
   [#56](https://github.com/d-addison/luminumbra/pull/56) and promotion PR
   [#55](https://github.com/d-addison/luminumbra/pull/55) remain open at this update.
-- **Verified in a bounded scope:** independent runtime-pack download matches its
-  pinned archive and all 22 member digests, plus manifest/conversion companions.
-  This does not establish final packaged scene/performance acceptance. Earlier
-  test/CI passes are baselines; final committed-revision checks remain required.
+- **Verified in a bounded scope:** published source/runtime pack downloads match
+  their pinned archives, all 14/22 regular members and companion receipts. Native
+  saved-world restart/switching passes on the private `14480a8` package. The MSVC
+  correction passes all 33 terrain/player cases with all six grids matching CI.
+  Independent Astra/xhigh reviews accepted the bounded source corrections. Final
+  integrated checks, packaged visuals/audio and release verification remain distinct.
 - **Not released:** engine v0.3.0. Signed publication, independent release download
   verification and a newly named private preview remain outstanding. Preserve the
   delivered `5daeb03` preview unchanged.
@@ -62,13 +67,16 @@ imply host migration, matchmaking or private Steam relay availability.
 
 - Surface terrain is finite (approximately 3 km and a 3200 m camera far plane).
   Local full-SDF cave residency is bounded (up to 128 m horizontal/64 m vertical).
-  Distant terrain omits caves and player edits. Local missing terrain is a present
-  correctness issue; longer views and distant-interior/edit scope need explicit
-  architecture allocation and acceptance.
-- White ground patches, purple shadows and visible stars in the settled
-  Default/424242/FOV 110° native capture have separate investigation issues.
-  Their causes remain unconfirmed. Tree-only tests do not close whole-scene
-  appearance reports. Culling and no-UI fixes retain their separate causal evidence.
+  Distant terrain omits caves and player edits. Complete-chunk culling bounds and
+  no-UI loading were repaired with causal regressions; holes inside intended
+  residency remain correctness failures. Longer views and distant-interior/edit
+  scope need explicit architecture allocation and acceptance.
+- Settled Default/424242/FOV 110° investigations established separate causes:
+  clipped caustics/broad foam caused white shallows; excessive ambient soil
+  reflection caused purple shadows; apparent daytime stars were ambient particles.
+  Water/lighting fixes and particle classification retain separate evidence. Broad
+  high-view pastel lift was isolated primarily to aerial haze. Final packaged
+  composition remains required; tree-only tests do not establish scene acceptance.
 - Audio decoding/device initialization does not prove audible output or complete
   event coverage. Listening/loopback qualification remains required; dynamic-body
   acoustic material classification currently uses Stone.
