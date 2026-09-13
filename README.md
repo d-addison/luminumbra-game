@@ -10,6 +10,8 @@ for reusable modules and script/component/data authoring without rebuilding engi
 
 Public art packs contain redistributable source/runtime content, provenance, conversion instructions and checksums. Private audio recordings and Steam SDK payloads are excluded. Public engine software releases remain source-only.
 
+The [September 13 recovery status](docs/roadmap.md#current-state) separates merged implementation, remaining verification and unpublished v0.3.0. The [promotion gate](https://github.com/d-addison/luminumbra/pull/55) remains blocked on expanded acceptance.
+
 ## Tree Small 02
 
 The initial tree source is [Tree Small 02](https://polyhaven.com/a/tree_small_02) by Rico Cilliers, published by Poly Haven under [CC0](https://polyhaven.com/license). Local glTF, buffer and nine JPG source files were compared byte-for-byte by size and upstream MD5 with Poly Haven's API manifest; the separate leaf alpha PNG was downloaded and verified as well. SHA-256 identities are recorded in `assets/tree-small-02/source-manifest.json`.
