@@ -1,0 +1,22 @@
+{
+  "schema": "luminumbra.game.workload.v1",
+  "id": "cave-walk",
+  "kind": "camera-traversal",
+  "description": "Camera benchmark through a cave (render and streaming cost); it is NOT a walking simulation and does not exercise activation or persistent wildlife; the path is recorded natively from discovered cave openings.",
+  "preset": "caverns",
+  "seed": 424242,
+  "duration_seconds": 60,
+  "tick_rate": 30,
+  "speed_mps": 4,
+  "pins": {
+    "preset_identity": "ebf1507e76482151",
+    "content_identity": null
+  },
+  "status": "pending-discovery",
+  "points": null,
+  "events": [],
+  "native": {
+    "commands": "docs/performance-workloads.md",
+    "receipt": null
+  }
+}

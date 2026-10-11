@@ -1,0 +1,53 @@
+{
+  "schema": "luminumbra.game.workload.v1",
+  "id": "edited-world-tour",
+  "kind": "camera-traversal",
+  "description": "Scripted edits (fill above a tile's pristine maximum height, dig) with snapshots; needs the engine traversal v2 event grammar; coordinates are chosen natively.",
+  "preset": "default",
+  "seed": 424242,
+  "duration_seconds": 60,
+  "tick_rate": 30,
+  "speed_mps": 8,
+  "pins": {
+    "preset_identity": "026f24207a8ffc7e",
+    "content_identity": null
+  },
+  "status": "pending-discovery",
+  "points": null,
+  "events": [
+    {
+      "id": "edit-fill-above-pristine",
+      "tick": 300,
+      "kind": "edit",
+      "x": null,
+      "y": null,
+      "z": null,
+      "radius_m": 6,
+      "mode": "fill"
+    },
+    {
+      "id": "snapshot-1",
+      "tick": 600,
+      "kind": "snapshot"
+    },
+    {
+      "id": "edit-dig-1",
+      "tick": 900,
+      "kind": "edit",
+      "x": null,
+      "y": null,
+      "z": null,
+      "radius_m": 4,
+      "mode": "dig"
+    },
+    {
+      "id": "snapshot-2",
+      "tick": 1200,
+      "kind": "snapshot"
+    }
+  ],
+  "native": {
+    "commands": "docs/performance-workloads.md",
+    "receipt": null
+  }
+}
