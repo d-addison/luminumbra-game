@@ -105,15 +105,17 @@ def _is_int(value) -> bool:
 
 
 def _number_text(value, where: str) -> str:
-    """Return the source text of a JSON number, refusing bools and exponent forms."""
+    """Return the plain fixed-point text of a JSON number, refusing bools.
+
+    Exponent tokens never reach this function: lumlib.schema refuses them at parse
+    time. Decimals are rendered with format(value, "f") so that 0.00000001 stays
+    0.00000001 and is not written as 1E-8.
+    """
     if isinstance(value, bool) or not isinstance(value, (int, Decimal)):
         raise WorkloadError("%s must be a JSON number" % where)
     if isinstance(value, int):
         return str(value)
-    text = str(value)
-    if "e" in text or "E" in text:
-        raise WorkloadError("%s must not use exponent notation" % where)
-    return text
+    return format(value, "f")
 
 
 def _match(value, pattern, key: str, shape: str) -> None:
@@ -159,10 +161,12 @@ def _check_pins(pins, status: str, where: str) -> None:
 
 def _check_points(points, status: str):
     """Return the point rows (None when points is null)."""
-    if points is None:
-        if status == STATUS_PINNED:
-            raise WorkloadError("pinned workload needs points")
+    if status == STATUS_PENDING:
+        if points is not None:
+            raise WorkloadError("pending-discovery workload must have points null")
         return None
+    if points is None:
+        raise WorkloadError("pinned workload needs points")
     if not isinstance(points, list):
         raise WorkloadError("points must be null or an array")
     if len(points) > traversal.MAX_POINTS:
@@ -172,7 +176,7 @@ def _check_points(points, status: str):
     return [_point_tokens(row, index) for index, row in enumerate(points)]
 
 
-def _check_events(events, expected_ticks: int, release: bool, where: str) -> None:
+def _check_events(events, expected_ticks: int, status: str, release: bool, where: str) -> None:
     if not isinstance(events, list):
         raise WorkloadError("events must be an array")
     if len(events) > MAX_EVENTS:
@@ -205,6 +209,8 @@ def _check_events(events, expected_ticks: int, release: bool, where: str) -> Non
                 if value is None:
                     if release:
                         raise WorkloadError("events[%d] null coordinates are refused in release mode" % index)
+                    if status == STATUS_PINNED:
+                        raise WorkloadError("events[%d] null coordinates are refused for a pinned workload" % index)
                 else:
                     _number_text(value, "events[%d].%s" % (index, axis))
             radius = _number_text(event["radius_m"], "events[%d].radius_m" % index)
@@ -219,14 +225,20 @@ def _receipt_path_ok(value) -> bool:
         return False
     if "\\" in value or value.startswith("/"):
         return False
-    return all(part not in ("", ".", "..") for part in value.split("/"))
+    parts = value.split("/")
+    if any(":" in part for part in parts):
+        return False
+    return all(part not in ("", ".", "..") for part in parts)
 
 
-def _check_native(native, where: str) -> None:
+def _check_native(native, where: str, release: bool) -> None:
     schema.check_keys(native, NATIVE_KEYS, set(), "%s: native" % where)
     if native["commands"] != NATIVE_COMMANDS:
         raise WorkloadError("native.commands must be '%s'" % NATIVE_COMMANDS)
-    if native["receipt"] is not None and not _receipt_path_ok(native["receipt"]):
+    if native["receipt"] is None:
+        if release:
+            raise WorkloadError("native.receipt must be set in release mode")
+    elif not _receipt_path_ok(native["receipt"]):
         raise WorkloadError("native.receipt must be null or a .json path under content/receipts/")
 
 
@@ -286,8 +298,8 @@ def check_workload(obj, stem: str, where: str, allow_pending: bool, release: boo
 
     _check_pins(obj["pins"], status, where)
     _check_points(obj["points"], status)
-    _check_events(obj["events"], expected_ticks, release, where)
-    _check_native(obj["native"], where)
+    _check_events(obj["events"], expected_ticks, status, release, where)
+    _check_native(obj["native"], where, release)
 
     if status == STATUS_PINNED:
         try:
@@ -447,6 +459,8 @@ def _check_receipt(path: str, obj, root: str, release: bool) -> None:
 
 def check_receipt(path, obj, ctx):
     """Validator for luminumbra.game.traversal-receipt.v1 files."""
+    if posixpath.dirname(path) != RECEIPT_DIR.rstrip("/"):
+        return ["%s: receipts must live under content/receipts/" % path]
     try:
         _check_receipt(path, obj, ctx.root, ctx.release)
     except SchemaError as exc:

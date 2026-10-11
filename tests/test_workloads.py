@@ -171,12 +171,10 @@ class CommittedWorkloadTests(unittest.TestCase):
     def test_pending_cave_walk_is_valid_with_allow_pending(self):
         self.assertEqual(_problems(_pending(), stem="cave-walk", allow_pending=True), [])
 
-    def test_identity_prints_16_hex_digits(self):
+    def test_identity_prints_cave_walk_pin(self):
         code, out, err = _run("identity", str(_CAVERNS_PATH))
         self.assertEqual(code, 0, err)
-        token = out.strip()
-        self.assertEqual(len(token), 16)
-        self.assertRegex(token, r"^[0-9a-f]{16}$")
+        self.assertEqual(out.strip(), "ebf1507e76482151")
 
 
 class WorkloadSourceTests(unittest.TestCase):
@@ -275,15 +273,72 @@ class WorkloadSourceTests(unittest.TestCase):
         obj["events"] = [_edit("edit-1", 300)]
         self.assertProblem(_problems(obj, release=True), "null coordinates are refused in release mode")
 
+    def test_pinned_edit_with_null_coordinates_is_refused(self):
+        obj = _surface_flight()
+        obj["events"] = [_edit("edit-1", 300)]
+        self.assertProblem(_problems(obj), "null coordinates are refused for a pinned workload")
+
+    def test_pinned_edit_with_coordinates_is_accepted(self):
+        obj = _surface_flight()
+        event = _edit("edit-1", 300)
+        event.update({"x": 100, "y": 80, "z": 100})
+        obj["events"] = [event]
+        self.assertEqual(_problems(obj), [])
+
+    def test_pending_edit_with_null_coordinates_is_accepted(self):
+        obj = _pending()
+        obj["events"] = [_edit("edit-1", 300)]
+        self.assertEqual(_problems(obj, stem="cave-walk", allow_pending=True), [])
+
+    def test_pending_with_empty_points_array_is_refused(self):
+        obj = _pending()
+        obj["points"] = []
+        self.assertProblem(
+            _problems(obj, stem="cave-walk", allow_pending=True), "pending-discovery workload must have points null"
+        )
+
+    def test_pending_with_points_array_is_refused(self):
+        obj = _pending()
+        obj["points"] = [[8, 80, 8, 0, -6], [248, 80, 8, 0, -6]]
+        self.assertProblem(
+            _problems(obj, stem="cave-walk", allow_pending=True), "pending-discovery workload must have points null"
+        )
+
+    def test_release_requires_native_receipt(self):
+        self.assertProblem(_problems(_surface_flight(), release=True), "native.receipt must be set in release mode")
+
+    def test_release_with_receipt_file_is_clean(self):
+        obj = _surface_flight()
+        obj["native"]["receipt"] = _RECEIPT_PATH
+        files = _good_tree(_receipt())
+        files[_WORKLOAD_PATH] = _json_bytes(obj)
+        self.assertEqual(_tree_problems(files, release=True), [])
+
+    def test_receipt_path_with_drive_colon_is_refused(self):
+        obj = _surface_flight()
+        obj["native"]["receipt"] = "content/receipts/C:/outside.json"
+        self.assertProblem(_problems(obj), "native.receipt must be")
+
     def test_zero_length_segment(self):
         obj = _surface_flight()
         obj["points"] = [[8, 80, 8, 0, -6], [8, 80, 8, 0, -6], [488, 80, 8, 0, -6]]
         self.assertProblem(_problems(obj), "zero length")
 
-    def test_points_with_exponent_token_are_refused(self):
-        obj = _surface_flight()
-        obj["points"][0][0] = Decimal("8E+1")
-        self.assertProblem(_problems(obj), "exponent notation")
+    def test_source_file_with_exponent_token_is_refused_at_load(self):
+        text = json.dumps(_surface_flight()).replace("[[8, 80", "[[8e0, 80")
+        self.assertIn("8e0", text)
+        problems = _tree_problems({_WORKLOAD_PATH: text.encode("utf-8")})
+        self.assertTrue(any(_WORKLOAD_PATH in p and "exponent" in p for p in problems), problems)
+
+    def test_fixed_point_radius_keeps_all_digits(self):
+        self.assertEqual(workload._number_text(Decimal("0.00000001"), "radius"), "0.00000001")
+
+    def test_source_file_with_fixed_point_radius_is_accepted(self):
+        obj = _pending()
+        obj["events"] = [_edit("edit-1", 10)]
+        text = json.dumps(obj).replace('"radius_m": 6', '"radius_m": 0.00000001')
+        self.assertIn('"radius_m": 0.00000001', text)
+        self.assertEqual(_tree_problems({"content/workloads/cave-walk.json": text.encode("utf-8")}, allow_pending=True), [])
 
     def test_point_must_have_five_fields(self):
         obj = _surface_flight()
@@ -431,6 +486,52 @@ class TraversalFileTests(unittest.TestCase):
     def test_pinned_source_with_matching_traversal_is_clean(self):
         self.assertEqual(_tree_problems(_good_tree()), [])
 
+    def test_expected_ticks_over_cap_is_refused_by_registry_and_check(self):
+        lines = [
+            "luminumbra.traversal.v1",
+            "duration_seconds 600.0333333333333",
+            "tick_rate 30",
+            "speed_mps 1",
+            "seed 424242",
+            "preset default",
+            "preset_revision 6",
+            "preset_identity 026f24207a8ffc7e",
+            "content_identity 16636010052247870746",
+            "expected_ticks 18001",
+            "cold_cache true",
+            "points 2",
+            "point 0 0 0 0 0",
+            "point 1000 0 0 0 0",
+        ]
+        text = "\n".join(lines) + "\n"
+        rel = "content/workloads/traversal/edge-cap.traversal"
+        problems = _tree_problems({rel: text.encode("utf-8")})
+        self.assertTrue(any(p == rel + ": expected_ticks must be in [1, 18000]" for p in problems), problems)
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_tree(tmp, {rel: text.encode("utf-8")})
+            code, out, _ = _run("check", "--root", tmp)
+        self.assertEqual(code, 1)
+        self.assertIn("expected_ticks must be in [1, 18000]", out)
+
+    def test_expected_ticks_over_cap_is_refused_by_lumlib_validate(self):
+        from lumlib import traversal as lum_traversal
+
+        t = lum_traversal.Traversal(
+            duration="600.0333333333333",
+            tick_rate=30,
+            speed="1",
+            seed=424242,
+            preset="default",
+            preset_revision=6,
+            preset_identity="026f24207a8ffc7e",
+            content_identity="16636010052247870746",
+            expected_ticks=18001,
+            points=(("0", "0", "0", "0", "0"), ("1000", "0", "0", "0", "0")),
+        )
+        with self.assertRaises(lum_traversal.TraversalError) as ctx:
+            lum_traversal.validate(t)
+        self.assertIn("expected_ticks must be in [1, 18000]", str(ctx.exception))
+
 
 class ReceiptTests(unittest.TestCase):
     def _problems_for(self, receipt, release=False):
@@ -478,6 +579,10 @@ class ReceiptTests(unittest.TestCase):
         receipt["verdict"] = "unevaluated"
         self.assertEqual(self._problems_for(receipt), [])
         self.assertReceiptProblem(receipt, "verdict must be pass in release mode", release=True)
+
+    def test_receipt_outside_receipts_dir_is_refused(self):
+        problems = _tree_problems({"content/elsewhere.json": _json_bytes(_receipt())})
+        self.assertEqual(problems, ["content/elsewhere.json: receipts must live under content/receipts/"])
 
 
 if __name__ == "__main__":

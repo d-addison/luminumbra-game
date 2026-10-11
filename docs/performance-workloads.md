@@ -52,20 +52,26 @@ emitter refuses them.
 - `seed` is an integer in `[0, 4294967295]`. `tick_rate` is 30.
 - `duration_seconds * tick_rate` must be an exact integer in `[1, 18000]`. The
   check uses exact decimal arithmetic.
-- `speed_mps` is greater than 0. Numbers are kept as their source text. Exponent
-  forms are refused.
+- `speed_mps` is greater than 0. Exponent number tokens (`8e0`, `1E-8`) are refused
+  when the file is parsed, so no validator sees them. Numbers are rendered in
+  fixed-point form, so `0.00000001` stays `0.00000001`.
 - `pins.preset_identity` is null or 16 lowercase hex digits.
   `pins.content_identity` is null or 1 to 20 decimal digits.
 - `status` is `pinned` or `pending-discovery`.
-- `points` is an array of `[x, y, z, yaw, pitch]` rows, or null while pending.
-  A pinned workload needs both pins and 2 to 1024 points.
+- `points` must be null while `status` is `pending-discovery`; an array, even an
+  empty one, is refused. A pinned workload needs both pins and an array of 2 to
+  1024 `[x, y, z, yaw, pitch]` rows.
 - `events` holds at most 16 entries. Ticks are integers in `[1, expected_ticks]`
   and strictly ascending. Event ids are kebab-case and unique. An `edit` event
-  has `x`, `y`, `z` (numbers, or null while pending), `radius_m` (greater than 0),
-  and `mode` (`fill` or `dig`). A `snapshot` event has no other keys. No other
-  kinds exist, and there is no material field.
+  has `x`, `y`, `z` (numbers; null only while the workload is pending), `radius_m`
+  (greater than 0), and `mode` (`fill` or `dig`). A pinned workload's edits need
+  coordinates, so null coordinates are refused with `events[i] null coordinates
+  are refused for a pinned workload`. A `snapshot` event has no other keys. No
+  other kinds exist, and there is no material field.
 - `native.commands` is `docs/performance-workloads.md`. `native.receipt` is null
-  or a `.json` path under `content/receipts/`.
+  or a `.json` path under `content/receipts/`. No component of that path may
+  contain `:`, so Windows drive syntax is refused. In release mode the receipt
+  must be set (`native.receipt must be set in release mode`).
 
 A pinned workload is also validated with the strict v1 traversal rules:
 
@@ -82,8 +88,8 @@ A pinned workload is also validated with the strict v1 traversal rules:
 - `pending-discovery` workloads are refused by default. They are accepted only
   with `--allow-pending`.
 - The release gate (`tools/validate_content.py --release`) refuses any workload
-  that is not `pinned`, any workload with null pins, and any event with null
-  coordinates.
+  that is not `pinned`, any workload with null pins, any workload whose
+  `native.receipt` is null, and any event with null coordinates.
 - `emit` refuses pending workloads and workloads with events.
 - A pinned workload with events is valid as a source. It has no emitted
   traversal until the engine traversal v2 grammar exists.
@@ -107,7 +113,9 @@ python3 -I tools/traversal_tool.py identity PRESET_JSON
 
 ## Traversal receipts (`luminumbra.game.traversal-receipt.v1`)
 
-A receipt lives under `content/receipts/` and records one native benchmark cell.
+A receipt must live at `content/receipts/<name>.json`; any other location is
+refused with `receipts must live under content/receipts/`. It records one native
+benchmark cell.
 Its keys are `schema`, `workload`, `cell_id`, `profile` (`quality` or
 `performance`), `display` (`3840x1600` or `3440x1440`), `report_sha256`,
 `verdict` (`pass`, `fail`, or `unevaluated`), `verdict_sha256`,
