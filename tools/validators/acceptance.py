@@ -41,7 +41,7 @@ PRIVATE_EXTENSIONS = (
     ".opus", ".aiff", ".aif", ".wem", ".bank", ".fsb", ".snd",
     ".mid", ".midi", ".ape", ".mka", ".amr",
     ".dll", ".so", ".dylib", ".exe", ".lib", ".a", ".obj", ".o", ".pdb",
-    ".sav", ".lmc", ".zip", ".pck", ".sdk", ".p12", ".pfx", ".pem", ".key",
+    ".sav", ".lmc", ".lmr", ".zip", ".pck", ".sdk", ".p12", ".pfx", ".pem", ".key",
 )
 
 ROOT_KEYS = frozenset(
@@ -71,14 +71,18 @@ _DRIVE_PATH = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:(?:\\|/)")
 _UNC_PATH = re.compile(r"""(?:^|(?<=[\s"'()\[\]{},;=<]))(?:\\\\\?\\|\\\\[^\\\s]+\\|//[^/\\\s]+/)""")
 _REQUIRED_LIMITATIONS = ("finite-residency", "distant-cave-edit-omitted")
 _LOCAL_PATTERNS = (re.compile("/ho" "me/"), re.compile("/Us" "ers/"))
-# A private extension ends a filename token: it follows a filename character and is
-# followed by the end of the text, whitespace, a quote, a closing bracket, a comma,
-# a semicolon, a colon, a question or exclamation mark, or a full stop that ends a
-# sentence. Matching ignores case, so a.wavelength and awav are not refused.
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+_NAMED_ESCAPES = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
+# A private extension ends a filename token: it follows a filename character or a
+# markdown or quoting delimiter (backtick, angle bracket, asterisk) and is followed by
+# the end of the text, whitespace, a quote, a backtick, an angle bracket, an asterisk,
+# a closing bracket, a comma, a semicolon, a colon, a question or exclamation mark, or
+# a full stop that ends a sentence. Matching ignores case, so a.wavelength and awav
+# are not refused.
 _PRIVATE_FILE = re.compile(
-    r"(?<=[\w\-])("
+    r"(?<=[\w\-`<>*])("
     + "|".join(re.escape(extension) for extension in PRIVATE_EXTENSIONS)
-    + r")(?=\Z|[\s\"')\]},;:?!]|\.(?=\s|\Z))",
+    + r")(?=\Z|[\s\"'`<>*)\]},;:?!]|\.(?=\s|\Z))",
     re.IGNORECASE,
 )
 # Windows reserved device names, matched on the part before the first dot, and the
@@ -89,6 +93,19 @@ _WINDOWS_DEVICE_NAMES = frozenset(
     + ["LPT%d" % number for number in range(1, 10)]
 )
 _WINDOWS_FORBIDDEN_CHARS = frozenset(':*?"<>|')
+
+
+def _escape_control(match):
+    char = match.group(0)
+    return _NAMED_ESCAPES.get(char) or "\\x%02x" % ord(char)
+
+
+def printable(text):
+    """Return TEXT with control characters backslash-escaped, so one diagnostic is one line.
+
+    Shared by the validator's problem strings and the command-line diagnostics.
+    """
+    return _CONTROL.sub(_escape_control, str(text))
 
 
 def _where(path):
@@ -388,7 +405,9 @@ def _check_portable_path(problems, value, path):
         )
         return
     for part in parts:
-        if part.split(".", 1)[0].rstrip(" ").upper() in _WINDOWS_DEVICE_NAMES:
+        if _CONTROL.search(part):
+            problems.append("%s: component '%s' contains a control character" % (path, part))
+        elif part.split(".", 1)[0].rstrip(" ").upper() in _WINDOWS_DEVICE_NAMES:
             problems.append("%s: component '%s' is a reserved Windows device name" % (path, part))
         elif any(char in _WINDOWS_FORBIDDEN_CHARS for char in part):
             problems.append(
@@ -599,7 +618,7 @@ def validate_bundle(doc, *, release=False):
     try:
         check_schema_id(doc, SCHEMA_ID, "bundle")
     except SchemaError as exc:
-        return [str(exc)]
+        return [printable(exc)]
     problems = []
     _keys(problems, doc, "", ROOT_KEYS)
     codes = _refusal_codes(doc)
@@ -636,7 +655,7 @@ def validate_bundle(doc, *, release=False):
     if "unresolved_diagnostics" in doc:
         _check_diagnostics(problems, doc["unresolved_diagnostics"], "unresolved_diagnostics")
     _scan_strings(doc, "", problems)
-    return problems
+    return [printable(problem) for problem in problems]
 
 
 def artifact_hashes(doc):
@@ -746,7 +765,10 @@ def verify_artifacts(doc, root, marker):
 
 
 def _registry_entry(path, obj, ctx):
-    return ["%s: %s" % (path, problem) for problem in validate_bundle(obj, release=ctx.release)]
+    return [
+        printable("%s: %s" % (path, problem))
+        for problem in validate_bundle(obj, release=ctx.release)
+    ]
 
 
 SCHEMAS = {SCHEMA_ID: _registry_entry}

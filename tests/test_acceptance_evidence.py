@@ -25,6 +25,7 @@ from validators.acceptance import (  # noqa: E402
     artifact_count,
     artifact_hashes,
     marker_problem,
+    printable,
     validate_bundle,
     verify_artifacts,
 )
@@ -52,7 +53,7 @@ ORIGINAL_EXTENSIONS = (
 ADDED_EXTENSIONS = (
     ".opus", ".aiff", ".aif", ".wem", ".bank", ".fsb", ".snd", ".mid", ".midi", ".ape",
     ".mka", ".amr", ".pdb", ".lib", ".a", ".dylib", ".obj", ".o", ".pck", ".sdk",
-    ".p12", ".pfx", ".pem", ".key",
+    ".p12", ".pfx", ".pem", ".key", ".lmr",
 )
 
 # Session indexes in make_bundle(): 0 create-world, 3 restart-world, 6 switch-world-b,
@@ -632,6 +633,26 @@ class SaveRuleTest(_BundleTest):
             doc["saves"][0]["files"][0]["path"] = bad
             self.assertProblem(doc, "saves[0].files[0].path: must be a portable relative path")
 
+    def test_control_characters_in_components_refused(self):
+        cases = (
+            ("world/a\nb.txt", "a\\nb.txt"),
+            ("world/a\tb.txt", "a\\tb.txt"),
+            ("world/a\x00b.txt", "a\\x00b.txt"),
+            ("world/a\x7fb.txt", "a\\x7fb.txt"),
+            ("world/a\rb/manifest.txt", "a\\rb"),
+        )
+        for bad, component in cases:
+            with self.subTest(component=component):
+                doc = self.bundle()
+                doc["saves"][0]["files"][0]["path"] = bad
+                self.assertProblem(
+                    doc,
+                    "saves[0].files[0].path: component '%s' contains a control character"
+                    % component,
+                )
+                for problem in validate_bundle(doc):
+                    self.assertFalse(any(ord(char) < 0x20 or ord(char) == 0x7F for char in problem))
+
     def test_windows_device_names_refused_in_any_component(self):
         cases = (
             ("CON.txt", "CON.txt"),
@@ -970,6 +991,21 @@ class PrivateMaterialTest(_BundleTest):
                 doc["historical"][0]["disposition"] = "item" + extension
                 self.assertProblem(doc, "private file extension '%s'" % extension)
 
+    def test_private_extension_in_markdown_delimiters_refused(self):
+        for text in ("`capture.wav`", "<capture.wav>", "**capture.wav**"):
+            with self.subTest(text=text):
+                doc = self.bundle()
+                doc["historical"][0]["disposition"] = text
+                self.assertProblem(doc, "historical[0].disposition: private file extension '.wav'")
+
+    def test_region_save_extension_refused_in_prose_and_save_path(self):
+        doc = self.bundle()
+        doc["historical"][0]["disposition"] = "see r.0.0.lmr"
+        self.assertProblem(doc, "historical[0].disposition: private file extension '.lmr'")
+        doc = self.bundle()
+        doc["saves"][0]["files"][0]["path"] = "world/r.0.0.lmr"
+        self.assertProblem(doc, "saves[0].files[0].path: private file extension '.lmr'")
+
     def test_private_extension_list_includes_every_named_extension(self):
         self.assertTrue(set(ORIGINAL_EXTENSIONS + ADDED_EXTENSIONS) <= set(PRIVATE_EXTENSIONS))
 
@@ -1215,6 +1251,21 @@ class RegistryTest(unittest.TestCase):
         _write_bundle(target / "bundle.json", bad)
         problems = validate_content.validate_tree(str(self.root), False, False)
         self.assertEqual(problems, ["content/acceptance/bundle.json: forest.agree: must be true"])
+
+    def test_control_characters_in_registry_problems_are_escaped(self):
+        target = self.root / "content" / "acceptance"
+        target.mkdir(parents=True)
+        bad = make_bundle()
+        bad["policy"]["bad\nkey"] = 1
+        _write_bundle(target / "bundle.json", bad)
+        problems = validate_content.validate_tree(str(self.root), False, False)
+        self.assertEqual(problems, ["content/acceptance/bundle.json: policy: unknown key 'bad\\nkey'"])
+        for problem in problems:
+            self.assertFalse(any(ord(char) < 0x20 or ord(char) == 0x7F for char in problem))
+
+    def test_printable_escapes_control_characters(self):
+        self.assertEqual(printable("a\nb\rc\td\x00e\x7f"), "a\\nb\\rc\\td\\x00e\\x7f")
+        self.assertEqual(printable("plain"), "plain")
 
 
 class CliTest(unittest.TestCase):

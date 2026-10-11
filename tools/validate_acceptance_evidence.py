@@ -22,7 +22,6 @@ are backslash-escaped (\\n, \\r, \\t, \\xNN) so that each problem stays on one l
 
 import argparse
 import os
-import re
 import sys
 
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -33,28 +32,17 @@ from lumlib.schema import SchemaError, load_json_file  # noqa: E402
 from validators.acceptance import (  # noqa: E402
     artifact_count,
     marker_problem,
+    printable,
     validate_bundle,
     verify_artifacts,
 )
 
 MAX_PROBLEMS = 50
 STRUCTURE_ONLY_LINE = "structure-only: artifacts NOT verified"
-_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
-_NAMED_ESCAPES = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
-
-
-def _escape_control(match):
-    char = match.group(0)
-    return _NAMED_ESCAPES.get(char) or "\\x%02x" % ord(char)
-
-
-def _printable(text):
-    """Return TEXT with control characters backslash-escaped, so one diagnostic is one line."""
-    return _CONTROL.sub(_escape_control, str(text))
 
 
 def _say(text, stream=None):
-    print(_printable(text), file=stream)
+    print(printable(text), file=stream)
 
 
 def _build_parser():
