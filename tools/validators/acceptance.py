@@ -65,10 +65,10 @@ _HEX40 = re.compile(r"[0-9a-f]{40}")
 _DRIVE_START = re.compile(r"[A-Za-z]:")
 _DRIVE_PATH = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:(?:\\|/)")
 # UNC (\\server\share), device (\\?\C:) and forward-slash UNC (//server/share) paths
-# that start the string or follow whitespace, a quote, a bracket, a comma, a semicolon,
-# an equals sign or "<". A colon is not in the boundary set, so the // of a URL such as
-# https://host/path never matches.
-_UNC_PATH = re.compile(r"""(?:^|(?<=[\s"'()\[\]{},;=<]))(?:\\\\\?\\|\\\\[^\\\s]+\\|//[^/\\\s]+/)""")
+# that are not preceded by an ASCII letter, digit or colon. Any other preceding character
+# (whitespace, quote, bracket, backtick, underscore, asterisk, punctuation) is a boundary;
+# a colon is not, so the // of a URL such as https://host/path never matches.
+_UNC_PATH = re.compile(r"""(?<![A-Za-z0-9:])(?:\\\\\?\\|\\\\[^\\\s]+\\|//[^/\\\s]+/)""")
 _REQUIRED_LIMITATIONS = ("finite-residency", "distant-cave-edit-omitted")
 _LOCAL_PATTERNS = (re.compile("/ho" "me/"), re.compile("/Us" "ers/"))
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")

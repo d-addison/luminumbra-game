@@ -1131,7 +1131,9 @@ class PrivateMaterialTest(_BundleTest):
     def test_unc_path_after_quote_or_bracket_refused(self):
         for bad in (r'see "\\server\share\run"', r"(//server/share/run)", r"[\\server\share\run]",
                     r"{//server/share/run}", r"a,\\server\share\run", r"a;//server/share/run",
-                    r"x=\\server\share\run", r"<\\server\share\run>", r"it's '\\server\share\run'"):
+                    r"x=\\server\share\run", r"<\\server\share\run>", r"it's '\\server\share\run'",
+                    "see `" + r"\\server\share\run" + "`", "_" + r"\\server\share\run" + "_",
+                    "**" + r"//server/share/run" + "**", "~" + r"\\server\share\run"):
             with self.subTest(value=bad):
                 doc = self.bundle()
                 doc["historical"][0]["disposition"] = bad
