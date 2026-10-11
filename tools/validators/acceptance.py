@@ -65,8 +65,11 @@ _HEX40 = re.compile(r"[0-9a-f]{40}")
 _DRIVE_START = re.compile(r"[A-Za-z]:")
 _DRIVE_PATH = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:(?:\\|/)")
 # UNC (\\server\share), device (\\?\C:) and forward-slash UNC (//server/share) paths
-# that start the string or follow whitespace. URLs such as https://host/path do not match.
-_UNC_PATH = re.compile(r"(?:^|(?<=\s))(?:\\\\\?\\|\\\\[^\\\s]+\\|//[^/\\\s]+/)")
+# that start the string or follow whitespace, a quote, a bracket, a comma, a semicolon,
+# an equals sign or "<". A colon is not in the boundary set, so the // of a URL such as
+# https://host/path never matches.
+_UNC_PATH = re.compile(r"""(?:^|(?<=[\s"'()\[\]{},;=<]))(?:\\\\\?\\|\\\\[^\\\s]+\\|//[^/\\\s]+/)""")
+_REQUIRED_LIMITATIONS = ("finite-residency", "distant-cave-edit-omitted")
 _LOCAL_PATTERNS = (re.compile("/ho" "me/"), re.compile("/Us" "ers/"))
 
 
@@ -481,11 +484,14 @@ def _check_limitations(problems, value, path, release):
     if not _list(problems, value, path):
         return
     seen = set()
+    first_index = {}
     for index, entry in enumerate(value):
         here = "%s[%d]" % (path, index)
         if not _keys(problems, entry, here, ("blocks_release", "id", "status")):
             continue
         _check_id(problems, entry["id"], _join(here, "id"), seen)
+        if isinstance(entry["id"], str):
+            first_index.setdefault(entry["id"], index)
         status = entry["status"]
         if status not in LIMITATION_STATUSES:
             problems.append("%s: must be open or closed" % _join(here, "status"))
@@ -493,6 +499,15 @@ def _check_limitations(problems, value, path, release):
             problems.append("%s: must be true or false" % _join(here, "blocks_release"))
         elif release and status == "open" and entry["blocks_release"] is True:
             problems.append("%s: open blocking limitation is refused in release mode" % here)
+    for required in _REQUIRED_LIMITATIONS:
+        if required not in first_index:
+            problems.append("%s: missing required entry '%s'" % (_where(path), required))
+            continue
+        index = first_index[required]
+        if value[index]["blocks_release"] is not True:
+            problems.append(
+                "%s[%d]: '%s' must have blocks_release true" % (path, index, required)
+            )
 
 
 def _check_historical(problems, value, path):

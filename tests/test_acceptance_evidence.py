@@ -757,6 +757,34 @@ class ForestAndLimitationTest(_BundleTest):
         doc["limitations"][0]["blocks_release"] = "true"
         self.assertProblem(doc, "limitations[0].blocks_release: must be true or false")
 
+    def test_empty_limitations_refused_for_both_required_ids(self):
+        doc = self.bundle()
+        doc["limitations"] = []
+        self.assertProblem(doc, "limitations: missing required entry 'finite-residency'")
+        self.assertProblem(doc, "limitations: missing required entry 'distant-cave-edit-omitted'")
+
+    def test_missing_required_limitation_refused(self):
+        doc = self.bundle()
+        del doc["limitations"][1]
+        self.assertProblem(doc, "limitations: missing required entry 'distant-cave-edit-omitted'")
+        self.assertNoProblem(doc, "missing required entry 'finite-residency'")
+
+    def test_required_limitation_with_blocks_release_false_refused(self):
+        doc = self.bundle()
+        doc["limitations"][0]["blocks_release"] = False
+        self.assertProblem(doc, "limitations[0]: 'finite-residency' must have blocks_release true")
+        self.assertNoProblem(doc, "distant-cave-edit-omitted' must have blocks_release true")
+
+    def test_distant_cave_limitation_with_blocks_release_false_refused(self):
+        doc = self.bundle()
+        doc["limitations"][1]["blocks_release"] = False
+        self.assertProblem(doc, "limitations[1]: 'distant-cave-edit-omitted' must have blocks_release true")
+
+    def test_other_limitations_may_be_added_freely(self):
+        doc = self.bundle()
+        doc["limitations"].append({"blocks_release": False, "id": "fixture-note", "status": "closed"})
+        self.assertClean(doc, release=True)
+
 
 class ReleaseOnlyRecordTest(_BundleTest):
     def test_preview_audio_off_must_be_true_in_release_mode(self):
@@ -919,6 +947,20 @@ class PrivateMaterialTest(_BundleTest):
                     doc["historical"][0]["disposition"] = value
                     self.assertProblem(doc, "historical[0].disposition: local absolute path shape is not allowed")
 
+    def test_unc_path_after_quote_or_bracket_refused(self):
+        for bad in (r'see "\\server\share\run"', r"(//server/share/run)", r"[\\server\share\run]",
+                    r"{//server/share/run}", r"a,\\server\share\run", r"a;//server/share/run",
+                    r"x=\\server\share\run", r"<\\server\share\run>", r"it's '\\server\share\run'"):
+            with self.subTest(value=bad):
+                doc = self.bundle()
+                doc["historical"][0]["disposition"] = bad
+                self.assertProblem(doc, "historical[0].disposition: local absolute path shape is not allowed")
+
+    def test_unc_path_inside_a_word_is_not_a_boundary(self):
+        doc = self.bundle()
+        doc["historical"][0]["disposition"] = r"run1\\server\share\run"
+        self.assertNoProblem(doc, "local absolute path shape")
+
     def test_url_with_host_and_path_is_allowed(self):
         for value in ("https://host/path", "see https://host/path"):
             with self.subTest(value=value):
@@ -930,6 +972,12 @@ class PrivateMaterialTest(_BundleTest):
         doc = self.bundle()
         doc["historical"][0]["disposition"] = "see https://example.invalid/run"
         self.assertNoProblem(doc, "local absolute path shape")
+
+    def test_url_with_double_slash_in_path_is_allowed(self):
+        doc = self.bundle()
+        doc["historical"][0]["disposition"] = "see https://example.invalid/a//b"
+        self.assertNoProblem(doc, "local absolute path shape")
+        self.assertClean(doc)
 
     def test_bare_url_host_is_not_a_drive_path(self):
         doc = self.bundle()

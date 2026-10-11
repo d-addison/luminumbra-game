@@ -84,7 +84,9 @@ binaries, libraries, SDK and key material; the list is in
 `tools/validators/acceptance.py`, matched case-insensitively) and local or
 network path shapes (drive paths, user home directories on Linux and macOS,
 UNC server shares, extended device paths, and `//` network shares) in every string of a bundle, so a
-bundle that names such material is rejected. URLs are allowed.
+bundle that names such material is rejected. A UNC or device path is recognised at the start of a string
+or after whitespace, a quote, a parenthesis, a bracket, a brace, a comma, a semicolon, an equals sign, or
+`<`. URLs are allowed.
 
 ## Criteria
 
@@ -103,7 +105,7 @@ evidence, the artifact expected, and the bundle key that records the result.
 | `--no-audio` wins over a diagnostic opt-in | Launch with both `--enable-audio --no-audio` (the diagnostic opt-in and the audio-off flag). The engine document states that `--enable-audio` is an experimental diagnostic opt-in and that `--no-audio` always suppresses it | Journal containing the audio-off marker | `startup_checks.no_audio_precedence_session` names a `restart` or `load` session with `audio_mode` `off` and `no_audio_flag` true |
 | Disabled settings controls preserve settings | Operator checks each disabled settings control and confirms the stored settings are unchanged | Proof record | `disabled_backend.proof_sha256`, `disabled_backend.settings_preserved` (release requires true) |
 | Preview launcher stays audio-off and its guard holds | Run the preview launcher; record its identity and the preview session | Launcher identity; preview journal with the audio-off marker | `launcher.identity_sha256`, `launcher.preview_audio_off` (release requires true); `sessions[]` kind `preview` |
-| Finite residency and distant cave/edit omissions | Not accepted for v0.3. Each gap is recorded as a `limitations[]` entry with status `open` and `blocks_release` true. It stays open until the final requirement is met: an unbounded world with 16 km distant coverage, with edits and caves in distant tiers (the expanded v0.3 contract). Only then may the entry become `closed` | None until closed | `limitations[]` ids `finite-residency`, `distant-cave-edit-omitted`; `--release` refuses either while open |
+| Finite residency and distant cave/edit omissions | Not accepted for v0.3. Each gap is recorded as a `limitations[]` entry with status `open` and `blocks_release` true. It stays open until the final requirement is met: an unbounded world with 16 km distant coverage, with edits and caves in distant tiers (the expanded v0.3 contract). Only then may the entry become `closed` | None until closed | `limitations[]` ids `finite-residency`, `distant-cave-edit-omitted`; both entries are mandatory in every bundle with `blocks_release` true; `--release` refuses either while open |
 | Historical application hang kept as a record | Kept as the historical record of the client hang (exit `0xCFFFFFFF`, 3489660927 unsigned, -805306369 signed; see the engine document section "Native client hang (PID 66604)"). It is never counted as a session exit and is refused as an exit code in every session. A recurrence blocks publication | None | `historical[]` kind `application-hang` |
 
 The startup and precedence rows are checked by the bundle itself. The first
