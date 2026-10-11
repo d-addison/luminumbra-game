@@ -15,6 +15,7 @@ if str(_TOOLS) not in sys.path:
     sys.path.insert(0, str(_TOOLS))
 
 import export_engine_content as exporter  # noqa: E402
+from lumlib import identity  # noqa: E402
 
 _PRESETS = _REPO / "content" / "presets"
 _MAPPED = "worlds/atlas/presets/cave_dense.json"
@@ -240,6 +241,42 @@ class ExportTests(unittest.TestCase):
         sidecar = json.loads((_PRESETS / "cave_dense.identity.json").read_text(encoding="utf-8"))
         sidecar["preset_identity"] = "0" * 16
         self._assert_sidecar_refused(json.dumps(sidecar, indent=2) + "\n", "preset_identity does not match")
+
+    def _ghost_root(self, generation_params):
+        """A temporary root whose content/presets holds a valid-looking preset named ghost."""
+        root = self._content_copy("ghost")
+        obj = {"name": "Ghost", "description": "A test preset", "schema_rev": 6, "generation_params": generation_params}
+        text = json.dumps(obj, indent=2) + "\n"
+        presets = root / "content" / "presets"
+        _write(presets / "ghost.json", text)
+        sidecar = {
+            "schema": "luminumbra.game.preset-identity.v1",
+            "preset": "ghost",
+            "file_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            "preset_identity": identity.preset_identity(identity.loads_strict(text)),
+        }
+        _write(presets / "ghost.identity.json", json.dumps(sidecar, indent=2) + "\n")
+        return root
+
+    def test_non_cave_dense_preset_with_unknown_params_blocks_export(self):
+        root = self._ghost_root({"extra": 1})
+        out_dir = self.tmp / "ghost-out"
+        code, out, _ = _run(["--root", str(root), "--out", str(out_dir)])
+        self.assertEqual(code, 1)
+        self.assertIn("content/presets/ghost.json: generation_params has unknown key 'extra'", out.splitlines())
+        self.assertFalse(out_dir.exists())
+
+    def test_deep_nesting_in_preset_exits_1_with_one_line_problem(self):
+        root = self._content_copy("deep")
+        _write(root / "content" / "presets" / "cave_dense.json", "[" * 200000 + "]" * 200000)
+        out_dir = self.tmp / "deep-out"
+        code, out, _ = _run(["--root", str(root), "--out", str(out_dir)])
+        self.assertEqual(code, 1)
+        self.assertIn("content/presets/cave_dense.json: json nesting is too deep", out.splitlines())
+        self.assertFalse(out_dir.exists())
+
+    def test_deep_nesting_in_sidecar_blocks_export_and_check(self):
+        self._assert_sidecar_refused("[" * 200000 + "]" * 200000, "json nesting is too deep")
 
 
 if __name__ == "__main__":

@@ -34,13 +34,26 @@ differ from `caverns`, apart from `name` and `description`:
 
 The validator (`tools/validators/scene.py`) refuses any preset whose features
 the loader would clamp, and requires these three values exactly for
-`cave_dense`. For `cave_dense` it also checks the full key set of the
-generation parameters against the caverns structure, so a missing or unknown key
-at any level is refused. Other presets must have exactly the four top-level keys
-`name`, `description`, `schema_rev` and `generation_params`, with a non-empty
-`generation_params`. A test compares the preset with the real caverns fixture
-and checks that the differences are exactly these three values plus `name` and
-`description`.
+`cave_dense`.
+
+Every exported preset must have exactly the four top-level keys `name`,
+`description`, `schema_rev` and `generation_params`, with a non-empty
+`generation_params`. Under `generation_params` the validator checks a shape table
+(`PRESET_SHAPE` in `tools/validators/scene.py`) written from the two engine
+fixtures, `tests/fixtures/engine-caverns-preset.json` and
+`tests/fixtures/engine-default-preset.json`. A key outside the union of the two
+fixtures at its path is refused, and so is a value of the wrong type: numbers
+(an integer is accepted for a float field, a boolean is not), integers for
+`octaves` and `iterations`, booleans, a non-empty string for `biomes.table`, and
+arrays of `[number, number]` pairs for the splines. A nested object where a leaf
+is expected is refused.
+
+`cave_dense` must also have exactly the caverns key set at each object path
+it shares with caverns, so a missing key or a key that only the default preset
+has is refused. Other presets may omit keys, because the engine fills them in.
+A test checks that the real caverns and default fixtures validate clean, and
+another checks that the differences between the preset and the caverns fixture
+are exactly these three values plus `name` and `description`.
 
 ### Identity sidecar
 
@@ -107,6 +120,16 @@ complete, `below_horizon_sky_percent` is at most 2, `seam_bands` is 0, and
   `coverage_sha256`, at least one tier with every tier complete, and a
   disposition for both profiles whose verdict is `accepted` or
   `waived-with-reason`. A `defect-open` verdict is always refused in release.
+- `--release` also requires native evidence. For every row, both profiles and
+  both displays there must be exactly one scene receipt in `content/receipts/`
+  with the matching `station`, `profile` and `display`. Each such receipt must
+  be a qualified receipt that passes the receipt rules, with `accepted`
+  disposition. Its `wanted_set_sha256`, `coverage_sha256` and `tiers` must equal
+  the row's recorded values. Missing, duplicate and inconsistent receipts are
+  refused. The `scene_identity` of a profile must be the same on both of its
+  displays and must differ between `quality` and `performance` for the same row.
+  The committed JSON does not carry the identities; they are taken from the
+  receipts. Pending mode (`--allow-pending`) does not require receipts.
 
 ## Discovery oracle (NATIVE)
 
@@ -117,8 +140,12 @@ repository asserts that `cave_dense` has more surface cave openings than
 ### Support at the baseline
 
 - Supported today: the engine's `FarLodHorizon` gate, run through
-  `validate-engine-frontier` at the baseline above. It covers three engine
-  presets. It does not compute an independent wanted set.
+  `validate-engine-frontier` at the baseline above. Its complete baseline
+  invocation is given under "Native handoff" below. It covers three engine
+  presets (`mountains`, `default` and `archipelago`), and it does not run
+  `cave_dense`. It does not compute an independent wanted set. Its parameters
+  are `-Mode` (`FarLodHorizon`), `-BuildPreset` (default `debug`) and
+  `-SmokeSeconds` (default 30; the baseline run uses 50).
 - BLOCKED: per-row, per-profile and per-display qualification evidence for the
   scene set. It needs engine instrumentation that is not yet available, and it
   depends on the engine acceptance workstream. Until that instrumentation exists,
@@ -182,6 +209,8 @@ export.
 - An I/O failure (for example, an output path whose parent is a file, or an
   engine root that is a file) prints one `PATH: reason` line and exits 1. A
   missing `--check` root is a usage error and exits 2.
+- A preset or sidecar nested too deeply to parse prints
+  `PATH: json nesting is too deep` and exits 1.
 - `--out` and `--check` are mutually exclusive (exit 2). An invalid preset
   refuses the export (exit 1).
 
@@ -218,7 +247,7 @@ command is not named at the baseline has no command and stays open.
 |---|---|---|---|---|
 | Release-candidate git SHA | record the SHA of the release candidate that the run uses | the SHA in the handoff record; every receipt's `game_revision` equals it | the SHA is recorded and matches every receipt | NEEDS-NATIVE-RUN |
 | Archive sha256 | record the sha256 of the release archive the run uses | the sha256 in the handoff record, next to the SHA | the sha256 is recorded with the RC SHA; no receipt field carries it yet | NEEDS-NATIVE-RUN |
-| Engine gate at baseline | `FarLodHorizon` through `validate-engine-frontier`, for the three engine presets it covers | gate output for those presets | output recorded; no wanted set is claimed from it | NEEDS-NATIVE-RUN |
+| Engine gate at baseline | From the engine repository root on the Windows machine: `powershell -File tools/gates/validate-engine-frontier.ps1 -Mode FarLodHorizon -BuildPreset debug -SmokeSeconds 50` | the gate runs presets `mountains`, `default` and `archipelago`; artifacts are written under `build/debug/test-artifacts/runtime/farlod-horizon-<preset>` | output recorded for the three presets; no wanted set is claimed from it; `cave_dense` is not run by this gate | NEEDS-NATIVE-RUN |
 | Station and control poses | no command named at the baseline | a pose per row | every row has a pose and status discovered; the arch-8km and horizon-16km cases are recorded | NEEDS-NATIVE-RUN (no command yet) |
 | Cave-count oracle | the discovery probe above, `caverns` and `cave_dense` in the fixed window | counts C and D, the rule outcome | both counts recorded; the threshold is recorded in the scene set only after it is measured | BLOCKED (counting instrument not available) |
 | Qualification of each row, profile and display | `FarLodHorizon` per-row evidence is not available | one scene receipt per row, profile and display | each receipt qualified, or carries an allowed non-accepted disposition | BLOCKED (engine instrumentation; engine acceptance workstream) |

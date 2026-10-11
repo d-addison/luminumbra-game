@@ -42,42 +42,156 @@ FEATURE_KEYS = ("cave_threshold", "surface_break_density", "max_feature_radius",
 # Top-level preset keys: the union of the top-level keys of tests/fixtures/engine-caverns-preset.json
 # and tests/fixtures/engine-default-preset.json. Every preset must have exactly these keys.
 PRESET_KEYS = frozenset(("name", "description", "schema_rev", "generation_params"))
-# Key-set shape of cave_dense's generation_params, derived from the caverns fixture. A string
-# leaf accepts any value; _PAIRS is an array of [number, number] pairs. Other presets are not
-# held to this table (the default preset has keys caverns does not).
-_LEAF = "leaf"
+# Shape of generation_params, written by hand from the two engine fixtures
+# tests/fixtures/engine-caverns-preset.json and tests/fixtures/engine-default-preset.json.
+# Every key that appears at a path in either fixture is allowed there, with the leaf type the
+# fixture gives it. A nested dict is an object with exactly the keys listed. _PAIRS is an array
+# of [number, number] pairs. Presets other than cave_dense may omit keys (the engine fills them
+# in) but may not add keys or use another leaf type.
+_NUMBER = "number"
+_INTEGER = "integer"
+_BOOL = "bool"
+_TEXT = "text"
 _PAIRS = "pairs"
-
-
-def _leaf_map(names):
-    return {name: _LEAF for name in names.split()}
-
-
-_TERRAIN_SHAPE = _leaf_map(
-    "base_frequency base_amplitude octaves persistence lacunarity height_offset island_mask_enabled"
-)
-_TERRAIN_SHAPE["shaping"] = dict(
-    _leaf_map(
-        "continentalness_frequency erosion_frequency peaks_frequency peaks_amplitude "
-        "domain_warp_amplitude domain_warp_frequency"
+PRESET_SHAPE = {
+    "terrain": {
+        "base_frequency": _NUMBER,
+        "base_amplitude": _NUMBER,
+        "octaves": _INTEGER,
+        "persistence": _NUMBER,
+        "lacunarity": _NUMBER,
+        "height_offset": _NUMBER,
+        "island_mask_enabled": _BOOL,
+        "shaping": {
+            "continentalness_frequency": _NUMBER,
+            "erosion_frequency": _NUMBER,
+            "peaks_frequency": _NUMBER,
+            "peaks_amplitude": _NUMBER,
+            "domain_warp_amplitude": _NUMBER,
+            "domain_warp_frequency": _NUMBER,
+            "continental_spline": _PAIRS,
+            "erosion_spline": _PAIRS,
+            "peaks_spline": _PAIRS,
+        },
+        "hydro": {
+            "enabled": _BOOL,
+            "iterations": _INTEGER,
+            "cell_size_m": _NUMBER,
+            "talus_height": _NUMBER,
+            "thermal_rate": _NUMBER,
+            "solubility": _NUMBER,
+            "deposition": _NUMBER,
+            "sediment_capacity": _NUMBER,
+            "max_offset": _NUMBER,
+        },
+    },
+    "biomes": {
+        "table": _TEXT,
+        "temperature_frequency": _NUMBER,
+        "humidity_frequency": _NUMBER,
+        "relief_enabled": _BOOL,
+        "relief_strength": _NUMBER,
+    },
+    "features": {
+        "caves_enabled": _BOOL,
+        "cave_frequency": _NUMBER,
+        "cave_threshold": _NUMBER,
+        "cave_carve_value": _NUMBER,
+        "spaghetti_frequency": _NUMBER,
+        "spaghetti_thickness": _NUMBER,
+        "surface_breaks_enabled": _BOOL,
+        "surface_break_density": _NUMBER,
+        "feature_cell_size": _NUMBER,
+        "max_feature_radius": _NUMBER,
+        "carve_smoothness": _NUMBER,
+        "entrance_min_cap": _NUMBER,
+        "rivers_enabled": _BOOL,
+        "river_frequency": _NUMBER,
+        "river_depth": _NUMBER,
+        "river_pv_min": _NUMBER,
+        "river_pv_max": _NUMBER,
+        "river_max_carve": _NUMBER,
+        "lakes_enabled": _BOOL,
+        "lake_frequency": _NUMBER,
+        "lake_threshold": _NUMBER,
+        "lake_depth": _NUMBER,
+        "lake_max_carve": _NUMBER,
+        "lake_bank_offset": _NUMBER,
+        "cliffs_enabled": _BOOL,
+        "cliff_frequency": _NUMBER,
+        "cliff_threshold": _NUMBER,
+        "cliff_step": _NUMBER,
+        "structures_enabled": _BOOL,
+    },
+}
+# The exact key set of cave_dense at each object path (dotted from the root), taken from the
+# caverns fixture. cave_dense must have these keys and no others at every listed path.
+CAVE_DENSE_KEYS = {
+    "generation_params": frozenset(("terrain", "biomes", "features")),
+    "generation_params.terrain": frozenset(
+        (
+            "base_frequency",
+            "base_amplitude",
+            "octaves",
+            "persistence",
+            "lacunarity",
+            "height_offset",
+            "shaping",
+            "island_mask_enabled",
+            "hydro",
+        )
     ),
-    continental_spline=_PAIRS,
-    erosion_spline=_PAIRS,
-    peaks_spline=_PAIRS,
-)
-_TERRAIN_SHAPE["hydro"] = _leaf_map(
-    "enabled iterations cell_size_m talus_height thermal_rate solubility deposition "
-    "sediment_capacity max_offset"
-)
-CAVE_DENSE_SHAPE = {
-    "terrain": _TERRAIN_SHAPE,
-    "biomes": _leaf_map("table temperature_frequency humidity_frequency relief_enabled"),
-    "features": _leaf_map(
-        "caves_enabled cave_frequency cave_threshold cave_carve_value spaghetti_frequency "
-        "spaghetti_thickness surface_breaks_enabled surface_break_density feature_cell_size "
-        "max_feature_radius carve_smoothness entrance_min_cap rivers_enabled river_frequency "
-        "river_depth river_pv_min river_pv_max river_max_carve lakes_enabled cliffs_enabled "
-        "structures_enabled"
+    "generation_params.terrain.shaping": frozenset(
+        (
+            "continentalness_frequency",
+            "erosion_frequency",
+            "peaks_frequency",
+            "peaks_amplitude",
+            "domain_warp_amplitude",
+            "domain_warp_frequency",
+            "continental_spline",
+            "erosion_spline",
+            "peaks_spline",
+        )
+    ),
+    "generation_params.terrain.hydro": frozenset(
+        (
+            "enabled",
+            "iterations",
+            "cell_size_m",
+            "talus_height",
+            "thermal_rate",
+            "solubility",
+            "deposition",
+            "sediment_capacity",
+            "max_offset",
+        )
+    ),
+    "generation_params.biomes": frozenset(("table", "temperature_frequency", "humidity_frequency", "relief_enabled")),
+    "generation_params.features": frozenset(
+        (
+            "caves_enabled",
+            "cave_frequency",
+            "cave_threshold",
+            "cave_carve_value",
+            "spaghetti_frequency",
+            "spaghetti_thickness",
+            "surface_breaks_enabled",
+            "surface_break_density",
+            "feature_cell_size",
+            "max_feature_radius",
+            "carve_smoothness",
+            "entrance_min_cap",
+            "rivers_enabled",
+            "river_frequency",
+            "river_depth",
+            "river_pv_min",
+            "river_pv_max",
+            "river_max_carve",
+            "lakes_enabled",
+            "cliffs_enabled",
+            "structures_enabled",
+        )
     ),
 }
 
@@ -297,27 +411,52 @@ def _check_features(path, name, features):
                 _fail(path, "%s.%s must be %s for cave_dense" % (label, key, expected))
 
 
-def _check_shape(path, label, value, shape):
-    """Compare VALUE with SHAPE by key set; _PAIRS must be an array of two-number arrays."""
-    if shape == _PAIRS:
+_LEAF_CHECKS = {
+    _NUMBER: (_is_number, "a number"),
+    _INTEGER: (_is_int, "an integer"),
+    _BOOL: (lambda value: isinstance(value, bool), "true or false"),
+    _TEXT: (_is_text, "a non-empty string"),
+}
+
+
+def _check_shape(path, label, value, node):
+    """Compare VALUE with NODE for every preset: unknown keys, wrong nesting and wrong leaf types fail."""
+    if node == _PAIRS:
         if not isinstance(value, list):
             _fail(path, "%s must be an array of [x, y] pairs" % label)
         for index, pair in enumerate(value):
             if not isinstance(pair, list) or len(pair) != 2 or not all(_is_number(item) for item in pair):
                 _fail(path, "%s[%d] must be a pair of two numbers" % (label, index))
         return
-    if not isinstance(shape, dict):
+    if isinstance(node, dict):
+        if not isinstance(value, dict):
+            _fail(path, "%s must be an object" % label)
+        for key in sorted(value):
+            if key not in node:
+                _fail(path, "%s has unknown key '%s'" % (label, key))
+        for key in sorted(value):
+            _check_shape(path, label + "." + key, value[key], node[key])
         return
-    if not isinstance(value, dict):
-        _fail(path, "%s must be an object" % label)
-    for key in sorted(shape):
-        if key not in value:
-            _fail(path, "%s is missing key '%s'" % (label, key))
-    for key in sorted(value):
-        if key not in shape:
-            _fail(path, "%s has unknown key '%s'" % (label, key))
-    for key in sorted(shape):
-        _check_shape(path, label + "." + key, value[key], shape[key])
+    check, noun = _LEAF_CHECKS[node]
+    if not check(value):
+        _fail(path, "%s must be %s" % (label, noun))
+
+
+def _check_cave_dense_keys(path, params):
+    """cave_dense must have exactly the caverns key set at every object path it shares with caverns."""
+    for dotted, keys in CAVE_DENSE_KEYS.items():
+        node = params
+        for part in dotted.split(".")[1:]:
+            if not isinstance(node.get(part), dict):
+                node = None
+                break
+            node = node[part]
+        if node is None:
+            continue
+        for key in sorted(keys - set(node)):
+            _fail(path, "%s is missing key '%s'" % (dotted, key))
+        for key in sorted(set(node) - keys):
+            _fail(path, "%s has unknown key '%s'" % (dotted, key))
 
 
 def _check_preset(path, text, ctx):
@@ -345,8 +484,9 @@ def _check_preset(path, text, ctx):
         _fail(path, "generation_params must be a non-empty object")
     if "features" in params:
         _check_features(path, name, params["features"])
+    _check_shape(path, "generation_params", params, PRESET_SHAPE)
     if name == CAVE_DENSE:
-        _check_shape(path, "generation_params", params, CAVE_DENSE_SHAPE)
+        _check_cave_dense_keys(path, params)
     sidecar = PRESET_DIR + "/" + name + IDENTITY_SUFFIX
     if not os.path.isfile(_abs(ctx.root, sidecar)):
         _fail(path, "missing identity sidecar %s" % sidecar)
@@ -401,6 +541,8 @@ def check_preset_file(path, text, ctx):
             _check_preset(path, text, ctx)
     except (SceneError, SchemaError) as exc:
         return [str(exc)]
+    except RecursionError:
+        return ["%s: json nesting is too deep" % path]
     return []
 
 
@@ -551,7 +693,7 @@ def _check_notes(path, notes):
         )
 
 
-def _check_release(path, obj):
+def _check_release(path, obj, ctx):
     if obj["status"] != STATUS_DISCOVERED:
         _fail(path, "release requires status discovered")
     for label in ("stations", "controls", "coverage"):
@@ -573,6 +715,7 @@ def _check_release(path, obj):
                     _fail(where, "release requires a disposition for %s" % profile)
                 if disposition["verdict"] not in RELEASE_VERDICTS:
                     _fail(where, "release refuses verdict '%s' for %s" % (disposition["verdict"], profile))
+    _check_native_evidence(path, obj, ctx)
 
 
 def _check_scene_set(path, obj, ctx):
@@ -608,7 +751,7 @@ def _check_scene_set(path, obj, ctx):
     if obj["status"] == STATUS_DISCOVERED and any(status != STATUS_DISCOVERED for status in statuses):
         _fail(path, "status discovered requires every station, control and coverage row to be discovered")
     if ctx.release:
-        _check_release(path, obj)
+        _check_release(path, obj, ctx)
 
 
 def check_scene_set(path, obj, ctx):
@@ -617,6 +760,8 @@ def check_scene_set(path, obj, ctx):
         _check_scene_set(path, obj, ctx)
     except (SceneError, SchemaError) as exc:
         return [str(exc)]
+    except RecursionError:
+        return ["%s: json nesting is too deep" % path]
     return []
 
 
@@ -728,12 +873,84 @@ def _check_receipt(path, obj, ctx):
             _fail(path, "release requires disposition accepted or waived-with-reason")
 
 
+def _receipt_files(ctx):
+    full = _abs(ctx.root, RECEIPT_DIR)
+    if not os.path.isdir(full):
+        return []
+    return sorted(
+        name for name in os.listdir(full) if name.startswith(RECEIPT_PREFIX) and name.endswith(JSON_SUFFIX)
+    )
+
+
+def _tier_pairs(tiers):
+    return [(item["tier"], item["complete"]) for item in tiers]
+
+
+def _load_receipts(ctx):
+    """Check every committed receipt as a release receipt and index it by (station, profile, display)."""
+    index = {}
+    for name in _receipt_files(ctx):
+        rel = RECEIPT_DIR + "/" + name
+        try:
+            data = _load_committed(rel, ctx.root, rel)
+        except RecursionError:
+            _fail(rel, "json nesting is too deep")
+        _check_receipt(rel, data, ctx)
+        key = (data["station"], data["profile"], data["display"])
+        if key in index:
+            _fail(
+                rel,
+                "duplicate scene receipt for station '%s' profile '%s' display '%s', also in %s"
+                % (key[0], key[1], key[2], index[key][0]),
+            )
+        index[key] = (rel, data)
+    return index
+
+
+def _check_native_evidence(path, obj, ctx):
+    """Release: every row needs one qualified receipt per profile and display, matching the row."""
+    receipts = _load_receipts(ctx)
+    for label in ("stations", "controls", "coverage"):
+        for row in obj[label]:
+            row_id = row["id"]
+            qualification = row["qualification"]
+            identities = {}
+            for profile in PROFILES:
+                values = set()
+                for display in DISPLAYS:
+                    key = (row_id, profile, display)
+                    if key not in receipts:
+                        _fail(
+                            path,
+                            "release requires a scene receipt for station '%s' profile '%s' display '%s'" % key,
+                        )
+                    rel, receipt = receipts[key]
+                    if receipt["wanted_set_sha256"] != qualification["wanted_set_sha256"]:
+                        _fail(rel, "wanted_set_sha256 does not match the scene set row '%s'" % row_id)
+                    if receipt["coverage_sha256"] != qualification["coverage_sha256"]:
+                        _fail(rel, "coverage_sha256 does not match the scene set row '%s'" % row_id)
+                    if _tier_pairs(receipt["tiers"]) != _tier_pairs(qualification["tiers"]):
+                        _fail(rel, "tiers do not match the scene set row '%s'" % row_id)
+                    values.add(receipt["scene_identity"])
+                if len(values) != 1:
+                    _fail(
+                        path,
+                        "release requires one scene_identity for station '%s' profile '%s' across both displays"
+                        % (row_id, profile),
+                    )
+                identities[profile] = values.pop()
+            if identities[PROFILES[0]] == identities[PROFILES[1]]:
+                _fail(path, "scene_identity must differ between profiles for station '%s'" % row_id)
+
+
 def check_scene_receipt(path, obj, ctx):
     """Validator for luminumbra.game.scene-receipt.v1 files."""
     try:
         _check_receipt(path, obj, ctx)
     except (SceneError, SchemaError) as exc:
         return [str(exc)]
+    except RecursionError:
+        return ["%s: json nesting is too deep" % path]
     return []
 
 

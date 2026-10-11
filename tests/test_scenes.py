@@ -1,7 +1,9 @@
 import copy
 import hashlib
 import json
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -18,6 +20,7 @@ _PRESET_PATH = "content/presets/cave_dense.json"
 _SIDECAR_PATH = "content/presets/cave_dense.identity.json"
 _RECEIPT_PATH = "content/receipts/scene-cave-mouth-2km-quality.json"
 _CAVERNS_FIXTURE = _REPO / "tests" / "fixtures" / "engine-caverns-preset.json"
+_DEFAULT_FIXTURE = _REPO / "tests" / "fixtures" / "engine-default-preset.json"
 _PRESET_FILE = _REPO / "content" / "presets" / "cave_dense.json"
 _SIDECAR_FILE = _REPO / "content" / "presets" / "cave_dense.identity.json"
 _SCENE_FILE = _REPO / "content" / "scenes" / "distant-world.json"
@@ -53,6 +56,55 @@ def _set_problems(obj, allow_pending=True, release=False):
     return scene.check_scene_set(_SET_PATH, obj, _ctx(allow_pending=allow_pending, release=release))
 
 
+def _release_root(test):
+    """A temporary root holding the committed scene set and presets, with an empty receipts folder."""
+    tmp = Path(tempfile.mkdtemp())
+    test.addCleanup(shutil.rmtree, str(tmp), True)
+    shutil.copytree(str(_REPO / "content" / "scenes"), str(tmp / "content" / "scenes"))
+    shutil.copytree(str(_REPO / "content" / "presets"), str(tmp / "content" / "presets"))
+    (tmp / "content" / "receipts").mkdir()
+    return tmp
+
+
+def _receipt_name(station, profile, display):
+    return "scene-%s-%s-%s.json" % (station, profile, display)
+
+
+def _write_receipt(root, name, receipt):
+    """Write a receipt as UTF-8 bytes with LF newlines."""
+    (root / "content" / "receipts" / name).write_bytes((json.dumps(receipt, indent=2) + "\n").encode("utf-8"))
+
+
+def _qualified_receipt(station, profile, display, **changes):
+    """A qualified accepted receipt that matches the discovered set built by _discovered_set."""
+    receipt = copy.deepcopy(_RECEIPT_BASE)
+    receipt.update(
+        station=station,
+        profile=profile,
+        display=display,
+        wanted_set_sha256="a" * 64,
+        coverage_sha256="b" * 64,
+        tiers=[{"tier": 0, "complete": True}],
+        scene_identity="%s.%s" % (station, profile),
+    )
+    receipt.update(changes)
+    return receipt
+
+
+def _write_full_receipts(root):
+    """Write one qualified receipt for every row, profile and display: 9 rows x 2 x 2 = 36."""
+    for row in _rows(_scene_set()):
+        for profile in scene.PROFILES:
+            for display in scene.DISPLAYS:
+                name = _receipt_name(row["id"], profile, display)
+                _write_receipt(root, name, _qualified_receipt(row["id"], profile, display))
+
+
+def _release_problems(obj, root):
+    ctx = Context(root=str(root), allow_pending=False, release=True)
+    return scene.check_scene_set(_SET_PATH, obj, ctx)
+
+
 def _assert_problem(test, problems, needle):
     test.assertTrue(problems, "expected a problem containing %r" % needle)
     test.assertTrue(any(needle in line for line in problems), "%r not in %r" % (needle, problems))
@@ -70,8 +122,98 @@ class SceneSetTests(unittest.TestCase):
         problems = _set_problems(_scene_set(), allow_pending=False, release=True)
         _assert_problem(self, problems, "status pending-native-discovery is not allowed in this mode")
 
-    def test_release_accepts_complete_discovered_set(self):
-        self.assertEqual(_set_problems(_discovered_set(), allow_pending=False, release=True), [])
+    def test_release_accepts_complete_discovered_set_with_receipts(self):
+        root = _release_root(self)
+        _write_full_receipts(root)
+        self.assertEqual(len(list((root / "content" / "receipts").iterdir())), 36)
+        self.assertEqual(_release_problems(_discovered_set(), root), [])
+
+    def test_release_refuses_filled_set_without_receipts(self):
+        root = _release_root(self)
+        problems = _release_problems(_discovered_set(), root)
+        _assert_problem(
+            self,
+            problems,
+            "release requires a scene receipt for station 'tunnel-interior' profile 'quality' display '3840x1600'",
+        )
+
+    def test_release_refuses_missing_receipt(self):
+        root = _release_root(self)
+        _write_full_receipts(root)
+        (root / "content" / "receipts" / _receipt_name("arch-8km", "performance", "3440x1440")).unlink()
+        _assert_problem(
+            self,
+            _release_problems(_discovered_set(), root),
+            "release requires a scene receipt for station 'arch-8km' profile 'performance' display '3440x1440'",
+        )
+
+    def test_release_refuses_duplicate_receipt(self):
+        root = _release_root(self)
+        _write_full_receipts(root)
+        _write_receipt(root, "scene-duplicate.json", _qualified_receipt("tunnel-interior", "quality", "3840x1600"))
+        _assert_problem(
+            self,
+            _release_problems(_discovered_set(), root),
+            "duplicate scene receipt for station 'tunnel-interior' profile 'quality' display '3840x1600'",
+        )
+
+    def test_release_refuses_receipt_with_mismatched_wanted_hash(self):
+        root = _release_root(self)
+        _write_full_receipts(root)
+        name = _receipt_name("cave-mouth-2km", "quality", "3840x1600")
+        _write_receipt(root, name, _qualified_receipt("cave-mouth-2km", "quality", "3840x1600", wanted_set_sha256="f" * 64))
+        _assert_problem(
+            self,
+            _release_problems(_discovered_set(), root),
+            "wanted_set_sha256 does not match the scene set row 'cave-mouth-2km'",
+        )
+
+    def test_release_refuses_receipt_with_mismatched_coverage_hash(self):
+        root = _release_root(self)
+        _write_full_receipts(root)
+        name = _receipt_name("horizon-16km", "performance", "3440x1440")
+        _write_receipt(root, name, _qualified_receipt("horizon-16km", "performance", "3440x1440", coverage_sha256="f" * 64))
+        _assert_problem(
+            self,
+            _release_problems(_discovered_set(), root),
+            "coverage_sha256 does not match the scene set row 'horizon-16km'",
+        )
+
+    def test_release_refuses_receipt_with_mismatched_tiers(self):
+        root = _release_root(self)
+        _write_full_receipts(root)
+        tiers = [{"tier": 0, "complete": True}, {"tier": 1, "complete": True}]
+        name = _receipt_name("arch-8km", "quality", "3840x1600")
+        _write_receipt(root, name, _qualified_receipt("arch-8km", "quality", "3840x1600", tiers=tiers))
+        _assert_problem(self, _release_problems(_discovered_set(), root), "tiers do not match the scene set row 'arch-8km'")
+
+    def test_release_refuses_scene_identity_shared_between_profiles(self):
+        root = _release_root(self)
+        _write_full_receipts(root)
+        for profile in scene.PROFILES:
+            for display in scene.DISPLAYS:
+                name = _receipt_name("empty-tile", profile, display)
+                _write_receipt(root, name, _qualified_receipt("empty-tile", profile, display, scene_identity="empty-tile.same"))
+        _assert_problem(
+            self,
+            _release_problems(_discovered_set(), root),
+            "scene_identity must differ between profiles for station 'empty-tile'",
+        )
+
+    def test_release_refuses_scene_identity_that_differs_across_displays(self):
+        root = _release_root(self)
+        _write_full_receipts(root)
+        name = _receipt_name("empty-tile", "quality", "3440x1440")
+        _write_receipt(root, name, _qualified_receipt("empty-tile", "quality", "3440x1440", scene_identity="empty-tile.other"))
+        _assert_problem(
+            self,
+            _release_problems(_discovered_set(), root),
+            "release requires one scene_identity for station 'empty-tile' profile 'quality' across both displays",
+        )
+
+    def test_release_receipts_are_not_required_in_pending_mode(self):
+        root = _release_root(self)
+        self.assertEqual(scene.check_scene_set(_SET_PATH, _scene_set(), Context(root=str(root), allow_pending=True, release=False)), [])
 
     def test_release_refuses_defect_open_disposition(self):
         obj = _discovered_set()
@@ -425,6 +567,84 @@ class PresetTests(unittest.TestCase):
     def test_malformed_spline_pair_refused_for_cave_dense(self):
         text = self._edited(lambda obj: obj["generation_params"]["terrain"]["shaping"]["erosion_spline"].append([1.0]))
         _assert_problem(self, self._check(text), "erosion_spline[6] must be a pair of two numbers")
+
+    def test_nested_object_where_a_number_is_expected_refused(self):
+        text = self._edited(lambda obj: obj["generation_params"]["features"].update(cave_frequency={"extra": 1}))
+        _assert_problem(self, self._check(text), "generation_params.features.cave_frequency must be a number")
+
+    def test_string_where_a_number_is_expected_refused(self):
+        text = self._edited(lambda obj: obj["generation_params"]["terrain"].update(base_frequency="0.009"))
+        _assert_problem(self, self._check(text), "generation_params.terrain.base_frequency must be a number")
+
+    def test_bool_where_a_number_is_expected_refused(self):
+        text = self._edited(lambda obj: obj["generation_params"]["features"].update(cave_frequency=True))
+        _assert_problem(self, self._check(text), "generation_params.features.cave_frequency must be a number")
+
+    def test_float_where_an_integer_is_expected_refused(self):
+        text = self._edited(lambda obj: obj["generation_params"]["terrain"].update(octaves=6.0))
+        _assert_problem(self, self._check(text), "generation_params.terrain.octaves must be an integer")
+
+    def test_number_where_a_bool_is_expected_refused(self):
+        text = self._edited(lambda obj: obj["generation_params"]["features"].update(caves_enabled=1))
+        _assert_problem(self, self._check(text), "generation_params.features.caves_enabled must be true or false")
+
+    def test_default_only_key_refused_for_cave_dense(self):
+        text = self._edited(lambda obj: obj["generation_params"]["features"].update(lake_frequency=0.1))
+        _assert_problem(self, self._check(text), "generation_params.features has unknown key 'lake_frequency'")
+
+    def test_unknown_nested_key_refused_for_any_preset(self):
+        text = self._ghost_text({"terrain": {"extra": 1}})
+        problems = scene.check_preset_file("content/presets/ghost.json", text, _ctx())
+        _assert_problem(self, problems, "generation_params.terrain has unknown key 'extra'")
+
+    def test_unknown_generation_params_key_refused_for_any_preset(self):
+        text = self._ghost_text({"extra": 1})
+        problems = scene.check_preset_file("content/presets/ghost.json", text, _ctx())
+        _assert_problem(self, problems, "generation_params has unknown key 'extra'")
+
+    def test_wrong_leaf_type_refused_for_any_preset(self):
+        text = self._ghost_text({"features": {"cave_frequency": "0.02"}})
+        problems = scene.check_preset_file("content/presets/ghost.json", text, _ctx())
+        _assert_problem(self, problems, "generation_params.features.cave_frequency must be a number")
+
+    def test_engine_fixtures_validate_as_presets(self):
+        for name, fixture in (("caverns", _CAVERNS_FIXTURE), ("default", _DEFAULT_FIXTURE)):
+            with self.subTest(preset=name):
+                root = self._fixture_root(name, fixture)
+                ctx = Context(root=str(root), allow_pending=False, release=False)
+                text = fixture.read_bytes().decode("utf-8")
+                self.assertEqual(scene.check_preset_file("content/presets/%s.json" % name, text, ctx), [])
+                sidecar = (root / "content" / "presets" / (name + ".identity.json")).read_bytes().decode("utf-8")
+                self.assertEqual(scene.check_preset_file("content/presets/%s.identity.json" % name, sidecar, ctx), [])
+
+    def test_deep_nesting_in_preset_is_one_line_problem(self):
+        text = "[" * 200000 + "]" * 200000
+        self.assertEqual(self._check(text), ["content/presets/cave_dense.json: json nesting is too deep"])
+
+    def test_deep_nesting_in_sidecar_is_one_line_problem(self):
+        text = "[" * 200000 + "]" * 200000
+        self.assertEqual(self._check(text, _SIDECAR_PATH), ["content/presets/cave_dense.identity.json: json nesting is too deep"])
+
+    def _ghost_text(self, generation_params):
+        obj = {"name": "Ghost", "description": "A test preset", "schema_rev": 6, "generation_params": generation_params}
+        return json.dumps(obj, indent=2) + "\n"
+
+    def _fixture_root(self, name, fixture):
+        """A temporary root holding FIXTURE as content/presets/NAME.json with a matching sidecar."""
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, str(root), True)
+        presets = root / "content" / "presets"
+        presets.mkdir(parents=True)
+        raw = fixture.read_bytes()
+        (presets / (name + ".json")).write_bytes(raw)
+        sidecar = {
+            "schema": "luminumbra.game.preset-identity.v1",
+            "preset": name,
+            "file_sha256": hashlib.sha256(raw).hexdigest(),
+            "preset_identity": identity.preset_identity(identity.loads_strict(raw.decode("utf-8"))),
+        }
+        (presets / (name + ".identity.json")).write_bytes((json.dumps(sidecar, indent=2) + "\n").encode("utf-8"))
+        return root
 
 
 def _leaves(obj, prefix=""):
