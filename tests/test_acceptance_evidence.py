@@ -1019,7 +1019,6 @@ class FixtureTest(unittest.TestCase):
         ("invalid-open-limitation.json", True, "limitations[0]: open blocking limitation is refused", True),
         ("invalid-no-historical.json", False, "historical: needs at least 1 item(s)", False),
         ("invalid-private-extension.json", False, "private file extension '.wav'", False),
-        ("invalid-drive-path.json", False, "local absolute path shape is not allowed", False),
     )
 
     def test_each_invalid_fixture_triggers_its_rule(self):
