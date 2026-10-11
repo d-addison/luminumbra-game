@@ -108,7 +108,7 @@ requests to `main`, and on manual dispatch.
   and content validation with `--allow-pending`.
 - The scripts use the Python standard library only. Nothing is installed and
   there is no network access beyond checkout.
-- Scripts run as `python3 -I`, with bytecode writing disabled.
+- Scripts run as `python -I -B`: `-B` disables bytecode writing and `-I` ignores PYTHONDONTWRITEBYTECODE.
 
 ## Local check policy
 

@@ -234,4 +234,7 @@ def emit(t: Traversal) -> str:
     ]
     for point in t.points:
         lines.append("point %s" % " ".join(point))
-    return "\n".join(lines) + "\n"
+    text = "\n".join(lines) + "\n"
+    if len(text.encode("utf-8")) > MAX_BYTES:
+        raise TraversalError("traversal exceeds 1 MiB")
+    return text

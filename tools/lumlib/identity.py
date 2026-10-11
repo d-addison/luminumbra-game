@@ -61,14 +61,23 @@ def _reject_constant(name):
     raise ValueError("non-finite number '%s' is not allowed" % name)
 
 
+def _parse_float(token):
+    # Exponent tokens are refused at parse time, including integers written with an
+    # exponent (1e0), because the json module sends them to parse_float.
+    if "e" in token or "E" in token:
+        raise ValueError("exponent number '%s' is not allowed" % token)
+    return float(token)
+
+
 def loads_strict(text: str):
-    """Parse JSON text, rejecting duplicate keys, NaN/Infinity, and a leading BOM."""
+    """Parse JSON text, rejecting duplicate keys, NaN/Infinity, exponent tokens, and a leading BOM."""
     if text.startswith("\ufeff"):
         raise ValueError("byte order mark is not allowed")
     return json.loads(
         text,
         object_pairs_hook=_reject_duplicate_keys,
         parse_constant=_reject_constant,
+        parse_float=_parse_float,
     )
 
 
@@ -83,14 +92,12 @@ def _walk(value, path, problems):
     if value is None or isinstance(value, bool):
         return
     if isinstance(value, str):
-        if not value.isascii():
-            problems.append("%s: non-ASCII string" % path)
+        _check_text(value, path, "string", problems)
         return
     if isinstance(value, dict):
         for key, child in value.items():
             child_path = "%s.%s" % (path, key)
-            if not key.isascii():
-                problems.append("%s: non-ASCII key" % child_path)
+            _check_text(key, child_path, "key", problems)
             _walk(child, child_path, problems)
         return
     if isinstance(value, list):
@@ -105,6 +112,16 @@ def _walk(value, path, problems):
             problems.append("%s: integer outside +-2**53" % path)
         return
     problems.append("%s: unsupported type %s" % (path, type(value).__name__))
+
+
+def _check_text(text, path, what, problems):
+    # Non-ASCII text is written raw (UTF-8) by both dumpers; control characters
+    # and surrogates are where escaping rules could differ, so they are refused.
+    for char in text:
+        code = ord(char)
+        if code < 0x20 or code == 0x7F or 0xD800 <= code <= 0xDFFF:
+            problems.append("%s: %s contains a control or surrogate character" % (path, what))
+            return
 
 
 def _check_float(value, path, problems):

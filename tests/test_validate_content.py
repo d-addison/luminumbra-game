@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+import os
 import sys
 import tempfile
 import unittest
@@ -204,6 +205,29 @@ class MainTest(_ContentTest):
         with contextlib.redirect_stderr(err):
             code = validate_content.main(["--root", str(self.root / "missing")])
         self.assertEqual(code, 2)
+
+    def test_content_regular_file_is_refused(self):
+        self.write("content", "not a directory\n")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = validate_content.main(["--root", str(self.root)])
+        self.assertEqual(code, 1)
+        self.assertIn("content: symlink or non-directory is not allowed", out.getvalue().splitlines())
+
+    def test_content_regular_file_is_refused_by_validate_tree(self):
+        self.write("content", "not a directory\n")
+        self.assertEqual(self.validate(), ["content: symlink or non-directory is not allowed"])
+
+    def test_dangling_content_symlink_is_refused_before_absence_notice(self):
+        try:
+            os.symlink(self.root / "missing-target", self.root / "content")
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable on this platform")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = validate_content.main(["--root", str(self.root)])
+        self.assertEqual(code, 1)
+        self.assertEqual(out.getvalue().splitlines(), ["content: symlink or non-directory is not allowed"])
 
 
 if __name__ == "__main__":

@@ -67,6 +67,15 @@ class LoadsStrictTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "byte order mark"):
             identity.loads_strict("\ufeff{}")
 
+    def test_rejects_exponent_tokens(self):
+        for text in ('{"a": 1e0}', '{"a": 6.0e1}', '{"a": 1E+2}'):
+            with self.subTest(text=text):
+                with self.assertRaisesRegex(ValueError, "exponent number"):
+                    identity.loads_strict(text)
+
+    def test_plain_decimal_tokens_still_parse(self):
+        self.assertEqual(identity.loads_strict("[0.5, -12, 60.0]"), [0.5, -12, 60.0])
+
 
 class PresetRestrictionTests(unittest.TestCase):
     def test_allowed_values_produce_no_problems(self):
@@ -91,16 +100,28 @@ class PresetRestrictionTests(unittest.TestCase):
     def test_positive_zero_is_allowed(self):
         self.assertEqual(identity.preset_restrictions({"x": 0.0}), [])
 
-    def test_non_ascii_value_is_rejected(self):
-        problems = identity.preset_restrictions({"name": "caf\u00e9"})
-        self.assertEqual(problems, ["$.name: non-ASCII string"])
-        with self.assertRaises(ValueError):
-            identity.preset_identity({"name": "caf\u00e9"})
+    def test_non_ascii_text_is_allowed(self):
+        self.assertEqual(identity.preset_restrictions({"name": "caf\u00e9", "caf\u00e9": 1}), [])
 
-    def test_non_ascii_key_is_rejected(self):
-        problems = identity.preset_restrictions({"caf\u00e9": 1})
+    def test_control_character_in_value_is_rejected(self):
+        problems = identity.preset_restrictions({"name": "a\nb"})
         self.assertEqual(len(problems), 1)
-        self.assertIn("non-ASCII key", problems[0])
+        self.assertIn("control or surrogate", problems[0])
+        with self.assertRaises(ValueError):
+            identity.preset_identity({"name": "a\nb"})
+
+    def test_control_character_in_key_is_rejected(self):
+        problems = identity.preset_restrictions({"a\tb": 1})
+        self.assertEqual(len(problems), 1)
+        self.assertIn("key contains a control", problems[0])
+
+    def test_surrogate_is_rejected(self):
+        self.assertEqual(len(identity.preset_restrictions({"name": "\ud800"})), 1)
+
+    def test_engine_caverns_preset_is_identifiable(self):
+        text = _read_fixture("engine-caverns-preset.json")
+        value = identity.preset_identity(identity.loads_strict(text))
+        self.assertRegex(value, r"^[0-9a-f]{16}$")
 
     def test_nan_is_rejected(self):
         self.assertTrue(identity.preset_restrictions({"x": float("nan")}))

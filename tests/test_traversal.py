@@ -189,6 +189,17 @@ class ValidateTests(unittest.TestCase):
         with self.assertRaises(TraversalError):
             traversal.emit(self._good(tick_rate=60))
 
+    def test_emit_refuses_text_over_one_mib(self):
+        # The yaw field is only checked as a plain number token, so a long
+        # fractional token keeps the value valid while the text grows past 1 MiB.
+        big = "0." + "0" * 1100000 + "1"
+        self.assertIsNotNone(traversal._NUM_RE.fullmatch(big))
+        base = traversal.parse(_FIXTURE_TEXT)
+        t = dataclasses.replace(base, points=(("8", "80", "8", big, "-6"),) + base.points[1:])
+        traversal.validate(t)
+        with self.assertRaisesRegex(TraversalError, "traversal exceeds 1 MiB"):
+            traversal.emit(t)
+
 
 if __name__ == "__main__":
     unittest.main()

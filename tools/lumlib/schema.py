@@ -1,8 +1,8 @@
 """JSON loading and schema-identifier helpers shared by the validators.
 
 Numbers are parsed so that the source text is preserved: floats become
-Decimal, integers stay int. Duplicate keys, NaN, Infinity, a leading BOM,
-carriage returns, and invalid UTF-8 are all rejected.
+Decimal, integers stay int. Duplicate keys, NaN, Infinity, exponent number
+tokens, a leading BOM, carriage returns, and invalid UTF-8 are all rejected.
 """
 
 import json
@@ -33,6 +33,28 @@ def _reject_constant(name):
     raise ValueError("non-finite number '%s' is not allowed" % name)
 
 
+def _parse_decimal(token):
+    # The json module hands every token with a fraction or exponent to parse_float,
+    # so an integer written with an exponent (1e0) is caught here as well.
+    if "e" in token or "E" in token:
+        raise ValueError("exponent number '%s' is not allowed" % token)
+    return Decimal(token)
+
+
+def loads_document(text):
+    """Parse JSON text with duplicate-key, NaN/Infinity and exponent refusal; floats are Decimal.
+
+    Raises ValueError (a SchemaError for load_json_file) on any refusal.
+    """
+    return json.loads(
+        text,
+        parse_float=_parse_decimal,
+        parse_int=int,
+        object_pairs_hook=_reject_duplicate_keys,
+        parse_constant=_reject_constant,
+    )
+
+
 def load_json_file(path):
     """Load a JSON file with strict encoding rules and Decimal floats."""
     data = Path(path).read_bytes()
@@ -45,13 +67,7 @@ def load_json_file(path):
     except UnicodeDecodeError:
         raise SchemaError("%s: file is not valid UTF-8" % path) from None
     try:
-        return json.loads(
-            text,
-            parse_float=Decimal,
-            parse_int=int,
-            object_pairs_hook=_reject_duplicate_keys,
-            parse_constant=_reject_constant,
-        )
+        return loads_document(text)
     except ValueError as exc:
         raise SchemaError("%s: %s" % (path, exc)) from None
 
