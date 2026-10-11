@@ -694,6 +694,81 @@ class DurationToleranceTests(unittest.TestCase):
             any("duration_seconds * tick_rate must be an integer" in p for p in problems), problems
         )
 
+    def test_just_inside_the_tolerance_is_accepted_by_pending_and_pinned(self):
+        # 0.10000000003333333 s * 30 is within 1e-9 of three ticks in both the exact and the float product.
+        for text in ("0.10000000003333333",):
+            obj = _pending()
+            obj["duration_seconds"] = Decimal(text)
+            problems = _problems(obj, stem="cave-walk", allow_pending=True)
+            self.assertFalse(any("tick_rate must be an integer" in p for p in problems), problems)
+
+    def test_exact_inside_but_float_outside_the_tolerance_is_refused(self):
+        # The exact tick error is 9.999998e-10 but the engine's binary float error is about 1.00000008e-9.
+        text = Decimal("0.13333333336666666")
+        pinned = _surface_flight()
+        pinned["duration_seconds"] = text
+        pinned_problems = _problems(pinned)
+        self.assertTrue(any("tick_rate must be an integer" in p for p in pinned_problems), pinned_problems)
+        pending = _pending()
+        pending["duration_seconds"] = text
+        pending_problems = _problems(pending, stem="cave-walk", allow_pending=True)
+        self.assertTrue(any("tick_rate must be an integer" in p for p in pending_problems), pending_problems)
+
+    def test_just_outside_the_tolerance_is_refused(self):
+        obj = _pending()
+        obj["duration_seconds"] = Decimal("0.1000000002")
+        problems = _problems(obj, stem="cave-walk", allow_pending=True)
+        self.assertTrue(any("tick_rate must be an integer" in p for p in problems), problems)
+
+    def test_float_tick_boundary_accepts_one_tick_duration(self):
+        obj = _pending()
+        obj["duration_seconds"] = Decimal("0.03333333333333333")
+        self.assertEqual(_problems(obj, stem="cave-walk", allow_pending=True), [])
+
+
+class UnreadableFileTests(unittest.TestCase):
+    """Files that cannot be read are refused with one-line PATH: cannot read: reason rows."""
+
+    _LINK = "content/workloads/x.json"
+
+    def _dangling_tree(self, tmp):
+        Path(tmp, "content", "workloads").mkdir(parents=True)
+        try:
+            os.symlink(str(Path(tmp, "missing-target.json")), str(Path(tmp, *self._LINK.split("/"))))
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks are not available on this platform")
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks are not available on this platform")
+    def test_dangling_symlink_is_refused_by_tree_problems(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._dangling_tree(tmp)
+            problems = workload.tree_problems(tmp, allow_pending=False)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertTrue(problems[0].startswith(self._LINK + ": cannot read: "), problems)
+        self.assertNotIn("Traceback", problems[0])
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks are not available on this platform")
+    def test_dangling_symlink_fails_cli_validate_with_rc_1(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._dangling_tree(tmp)
+            code, out, err = _run("validate", "--root", tmp)
+        self.assertEqual(code, 1, err)
+        lines = out.splitlines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertTrue(lines[0].startswith(self._LINK + ": cannot read: "), lines)
+        self.assertNotIn("Traceback", err)
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks are not available on this platform")
+    def test_dangling_symlink_fails_cli_check_with_rc_1(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._dangling_tree(tmp)
+            code, out, err = _run("check", "--root", tmp)
+        self.assertEqual(code, 1, err)
+        lines = out.splitlines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertTrue(lines[0].startswith(self._LINK + ": cannot read: "), lines)
+        self.assertNotIn("Traceback", err)
+
 
 class DeepJsonTests(unittest.TestCase):
     _DEEP = ("[" * 200000 + "]" * 200000).encode("utf-8")
