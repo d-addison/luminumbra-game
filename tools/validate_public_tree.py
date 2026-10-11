@@ -9,12 +9,14 @@ Checked for each file in the set (git tracked files; with --worktree also
 untracked non-ignored files; without git, every file under ROOT except .git):
   symlinks, size limit, forbidden extensions, forbidden leading magic bytes,
   text-zone NUL and UTF-8 rules, strict-zone line endings, BOM, final LF and
-  JSON validity, and local path or credential shaped strings in text files.
+  JSON validity and nesting depth, and local path or credential shaped strings in
+  text files, including the decoded keys and string values of JSON files.
 
 Exit codes: 0 clean, 1 problems found, 2 usage error.
 """
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -56,11 +58,23 @@ FORBIDDEN_MAGIC = (
     b"OggS",
     b"fLaC",
     b"ID3",
+    # executables: PE, ELF, Mach-O thin (32 and 64 bit, both byte orders) and universal
     b"MZ",
     b"\x7fELF",
+    b"\xfe\xed\xfa\xce",
+    b"\xfe\xed\xfa\xcf",
+    b"\xce\xfa\xed\xfe",
+    b"\xcf\xfa\xed\xfe",
+    b"\xca\xfe\xba\xbe",
+    # archives: zip local, central directory end, spanned; 7z; gzip; xz; bzip2; rar
     b"PK\x03\x04",
+    b"PK\x05\x06",
+    b"PK\x07\x08",
     b"7z\xbc\xaf",
     b"\x1f\x8b",
+    b"\xfd7zXZ\x00",
+    b"BZh",
+    b"Rar!\x1a\x07",
     b"SQLite format 3",
     b"\x89PNG",
     b"\xff\xd8\xff",
@@ -89,7 +103,7 @@ ABSOLUTE_PATH_PATTERNS = (
     re.compile("/Use" "rs/"),
     re.compile("/l" "um/"),
     re.compile(r"/mnt/[a-z]/"),
-    re.compile(r"(?i)[a-z]:(?:\\{1,2}|/)(?:users|documents and settings)(?:\\{1,2}|/)"),
+    re.compile(r"(?i)[a-z]:(?:\\{1,2}|/)(?:users|documents and settings)(?=[\\/\s]|$)"),
 )
 
 CREDENTIAL_PATTERNS = (
@@ -182,7 +196,10 @@ def _check_strict(rel, ext, data):
     if ext == ".json":
         try:
             obj = schema.loads_document(data.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError) as exc:
+        except RecursionError:
+            problems.append(f"{rel}: json nesting is too deep")
+            return problems
+        except Exception as exc:
             problems.append(f"{rel}: invalid JSON in strict zone: {exc}")
             return problems
         if rel.startswith(EVIDENCE_PREFIX):
@@ -191,6 +208,53 @@ def _check_strict(rel, ext, data):
             elif not isinstance(obj.get("schema"), str) or _SCHEMA_ID_RE.fullmatch(obj["schema"]) is None:
                 problems.append(f"{rel}: evidence JSON needs a schema key matching luminumbra.<name>.v<N>")
     return problems
+
+
+def _json_strings(data):
+    """Return every decoded object key and string value of a JSON document, or None when it does not parse.
+
+    This is a lenient decode for the security scan, independent of the strict
+    preset parser: exponent numbers and other tokens the strict zone refuses
+    still decode here, so their strings are scanned. Parse failures are left to
+    the existing reports; nothing is raised here.
+    """
+    try:
+        obj = json.loads(data.decode("utf-8"))
+    except (ValueError, RecursionError):
+        return None
+    strings = []
+    stack = [obj]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            for key, value in node.items():
+                strings.append(key)
+                stack.append(value)
+        elif isinstance(node, list):
+            stack.extend(node)
+        elif isinstance(node, str):
+            strings.append(node)
+    return strings
+
+
+_JSON_ESCAPE_RE = re.compile(r'\\(?:u([0-9a-fA-F]{4})|(["\\\\/bfnrt]))')
+_JSON_SIMPLE_ESCAPES = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+
+
+def _unescape_json_text(text):
+    """Resolve JSON string escapes in raw text without parsing the document.
+
+    Unlike a decode, this keeps overwritten duplicate-key values and survives
+    nesting depths a parser refuses, so the security scan also sees them.
+    """
+
+    def replace(match):
+        if match.group(1) is not None:
+            return chr(int(match.group(1), 16))
+        char = match.group(2)
+        return _JSON_SIMPLE_ESCAPES.get(char, char)
+
+    return _JSON_ESCAPE_RE.sub(replace, text)
 
 
 def _check_file(root, rel):
@@ -234,10 +298,15 @@ def _check_file(root, rel):
         problems.extend(_check_strict(rel, ext, data))
 
     if b"\x00" not in data:
-        text = data.decode("utf-8", errors="replace")
-        if any(pattern.search(text) for pattern in ABSOLUTE_PATH_PATTERNS):
+        samples = [data.decode("utf-8", errors="replace")]
+        if ext == ".json":
+            samples.append(_unescape_json_text(samples[0]))
+            decoded = _json_strings(data)
+            if decoded is not None:
+                samples.extend(decoded)
+        if any(pattern.search(sample) for sample in samples for pattern in ABSOLUTE_PATH_PATTERNS):
             problems.append(f"{rel}: absolute local path")
-        if any(pattern.search(text) for pattern in CREDENTIAL_PATTERNS):
+        if any(pattern.search(sample) for sample in samples for pattern in CREDENTIAL_PATTERNS):
             problems.append(f"{rel}: credential-shaped string")
     return problems
 
