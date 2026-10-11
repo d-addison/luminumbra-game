@@ -14,6 +14,9 @@ from lumlib import schema
 from lumlib.schema import SchemaError
 
 SCHEMA = "luminumbra.game.resource-accounting.v1"
+# The mandated scope, as committed in docs/evidence/tree-small-02-resource-accounting.json.
+SCOPE = "tree-small-02 pack only; file and payload sizes, not GPU allocations"
+MAX_COUNT = 2**31 - 1
 
 _HEX40 = re.compile(r"[0-9a-f]{40}")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
@@ -76,6 +79,11 @@ def _is_int(value):
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _is_count(value):
+    """True when value is an integer from 0 to MAX_COUNT; checked before any arithmetic or %d formatting."""
+    return _is_int(value) and 0 <= value <= MAX_COUNT
+
+
 def _is_sha(value, pattern):
     return isinstance(value, str) and pattern.fullmatch(value) is not None
 
@@ -118,8 +126,8 @@ def _validate_mesh(label, index, row, problems):
     if not _is_int(row["lod"]) or row["lod"] not in _LODS:
         problems.append("%s: lod must be 0, 1 or 2" % where)
     for key in ("vertices", "triangles", "vertex_bytes", "index_bytes", "header_bytes", "file_bytes"):
-        if not _is_int(row[key]) or row[key] < 0:
-            problems.append("%s: %s must be a non-negative integer" % (where, key))
+        if not _is_count(row[key]):
+            problems.append("%s: %s must be a non-negative integer no larger than %d" % (where, key, MAX_COUNT))
             return None
     if row["header_bytes"] != _MESH_HEADER:
         problems.append("%s: header_bytes must be %d" % (where, _MESH_HEADER))
@@ -146,8 +154,8 @@ def _validate_texture(label, index, row, problems):
     if path_problem is not None:
         problems.append("%s: path %s" % (where, path_problem))
     for key in ("file_bytes", "header_bytes", "payload_bytes"):
-        if not _is_int(row[key]) or row[key] < 0:
-            problems.append("%s: %s must be a non-negative integer" % (where, key))
+        if not _is_count(row[key]):
+            problems.append("%s: %s must be a non-negative integer no larger than %d" % (where, key, MAX_COUNT))
             return None
     if row["header_bytes"] != _TEXTURE_HEADER:
         problems.append("%s: header_bytes must be %d" % (where, _TEXTURE_HEADER))
@@ -168,10 +176,10 @@ def _validate_totals(label, totals, meshes, textures, problems):
         problems.append(str(exc))
         return
     for key in _TOTAL_INT_KEYS:
-        if not _is_int(totals[key]):
-            problems.append("%s: %s must be an integer" % (where, key))
+        if not _is_count(totals[key]):
+            problems.append("%s: %s must be an integer no larger than %d" % (where, key, MAX_COUNT))
     mesh_file = sum(m["file_bytes"] for m in meshes)
-    if _is_int(totals["mesh_file_bytes"]) and totals["mesh_file_bytes"] != mesh_file:
+    if _is_count(totals["mesh_file_bytes"]) and totals["mesh_file_bytes"] != mesh_file:
         problems.append("%s: mesh_file_bytes %r does not match sum %d" % (where, totals["mesh_file_bytes"], mesh_file))
     by_lod = totals["mesh_triangles_by_lod"]
     try:
@@ -181,17 +189,17 @@ def _validate_totals(label, totals, meshes, textures, problems):
     else:
         for lod in _LODS:
             value = by_lod["lod%d" % lod]
-            if not _is_int(value):
-                problems.append("%s: lod%d triangles must be an integer" % (where, lod))
+            if not _is_count(value):
+                problems.append("%s: lod%d triangles must be an integer no larger than %d" % (where, lod, MAX_COUNT))
                 continue
             expected = sum(m["triangles"] for m in meshes if m["lod"] == lod)
             if value != expected:
-                problems.append("%s: lod%d triangles %r does not match sum %d" % (where, lod, value, expected))
+                problems.append("%s: lod%d triangles %d does not match sum %d" % (where, lod, value, expected))
     tex_file = sum(t["file_bytes"] for t in textures)
-    if _is_int(totals["texture_file_bytes"]) and totals["texture_file_bytes"] != tex_file:
-        problems.append("%s: texture_file_bytes %r does not match sum %d" % (where, totals["texture_file_bytes"], tex_file))
+    if _is_count(totals["texture_file_bytes"]) and totals["texture_file_bytes"] != tex_file:
+        problems.append("%s: texture_file_bytes %d does not match sum %d" % (where, totals["texture_file_bytes"], tex_file))
     tex_payload = sum(t["payload_bytes"] for t in textures)
-    if _is_int(totals["texture_payload_bytes"]) and totals["texture_payload_bytes"] != tex_payload:
+    if _is_count(totals["texture_payload_bytes"]) and totals["texture_payload_bytes"] != tex_payload:
         problems.append(
             "%s: texture_payload_bytes %r does not match sum %d" % (where, totals["texture_payload_bytes"], tex_payload)
         )
@@ -234,6 +242,11 @@ def validate(path, obj, ctx=None):
         problems.append("%s: engine_revision must be 40 lowercase hex digits" % path)
     if not isinstance(obj["asset"], str) or not obj["asset"]:
         problems.append("%s: asset must be a non-empty string" % path)
+    scope = obj["scope"]
+    if not isinstance(scope, str) or not scope:
+        problems.append("%s: scope must be a non-empty string" % path)
+    elif scope != SCOPE:
+        problems.append("%s: scope does not match the mandated scope string" % path)
 
     source = obj["source_receipt"]
     try:

@@ -35,7 +35,7 @@ RECEIPT_SCHEMA = "luminumbra.game.asset-conversion.v1"
 ACCOUNTING_SCHEMA = resource_accounting.SCHEMA
 ENGINE_REVISION = "f18098d72077a4682dae1df96915a4d0c95b6889"
 ASSET = "tree-small-02"
-SCOPE = "tree-small-02 pack only; file and payload sizes, not GPU allocations"
+SCOPE = resource_accounting.SCOPE
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MANIFEST = REPO_ROOT / "assets" / "tree-small-02" / "runtime-manifest.json"
@@ -121,6 +121,16 @@ def _is_int(value):
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _is_count(value):
+    """True when value is an integer from 0 to MAX_COUNT; checked before any arithmetic or %d formatting."""
+    return _is_int(value) and 0 <= value <= MAX_COUNT
+
+
+def _manifest_value_usable(member, key):
+    """False when the manifest carries key with a value that _check_manifest already refused."""
+    return key not in member or _is_count(member[key])
+
+
 def _is_sha256(value):
     return isinstance(value, str) and _SHA_RE.fullmatch(value) is not None
 
@@ -146,16 +156,22 @@ def _load_json(path):
 
 
 MAX_SPHERE_MAGNITUDE = 10**12
+MAX_COUNT = 2**31 - 1
 
 
 def _is_finite_number(item):
     if isinstance(item, bool):
         return False
-    if isinstance(item, Decimal):
-        return item.is_finite() and abs(item) <= MAX_SPHERE_MAGNITUDE
-    if isinstance(item, int):
-        return abs(item) <= MAX_SPHERE_MAGNITUDE
-    return isinstance(item, float) and math.isfinite(item) and abs(item) <= MAX_SPHERE_MAGNITUDE
+    try:
+        if isinstance(item, Decimal):
+            # copy_abs() and Decimal comparison are exact and ignore the decimal context,
+            # so no rounding can move a value across the bound and no Overflow can be raised.
+            return item.is_finite() and item.copy_abs() <= Decimal(MAX_SPHERE_MAGNITUDE)
+        if isinstance(item, int):
+            return abs(item) <= MAX_SPHERE_MAGNITUDE
+        return isinstance(item, float) and math.isfinite(item) and abs(item) <= MAX_SPHERE_MAGNITUDE
+    except ArithmeticError:
+        return False
 
 
 def _check_bounding_sphere(where, value, problems):
@@ -176,8 +192,8 @@ def _check_digest_object(where, obj, problems):
         problems.append(str(exc))
         return False
     ok = True
-    if not _is_int(obj["size"]) or obj["size"] < 0:
-        problems.append("%s.size must be a non-negative integer" % where)
+    if not _is_count(obj["size"]):
+        problems.append("%s.size must be a non-negative integer no larger than %d" % (where, MAX_COUNT))
         ok = False
     if not _is_sha256(obj["sha256"]):
         problems.append("%s.sha256 must be 64 lowercase hex digits" % where)
@@ -210,16 +226,16 @@ def _parse_entry(label, index, entry, problems):
     if not isinstance(path, str):
         problems.append("%s: path must be a string" % where)
         return None
-    if not _is_int(entry["size"]) or entry["size"] < 0:
-        problems.append("%s: size must be a non-negative integer" % path)
+    if not _is_count(entry["size"]):
+        problems.append("%s: size must be a non-negative integer no larger than %d" % (path, MAX_COUNT))
         return None
     if not isinstance(entry["sha256"], str) or _SHA_RE.fullmatch(entry["sha256"]) is None:
         problems.append("%s: sha256 must be 64 lowercase hex digits" % path)
         return None
     if path.endswith(".lmesh"):
         for key in ("vertices", "triangles"):
-            if not _is_int(entry.get(key)) or entry[key] < 0:
-                problems.append("%s: %s must be a non-negative integer" % (path, key))
+            if not _is_count(entry.get(key)):
+                problems.append("%s: %s must be a non-negative integer no larger than %d" % (path, key, MAX_COUNT))
                 return None
     if "bounding_sphere" in entry and not _check_bounding_sphere(path, entry["bounding_sphere"], problems):
         return None
@@ -264,8 +280,8 @@ def _check_leaf_fitter(label, receipt, trimmed, problems):
         schema.check_keys(leaf, required, LEAF_FITTER_KEYS - required, where)
     except SchemaError as exc:
         problems.append(str(exc))
-    if "size" in leaf and (not _is_int(leaf["size"]) or leaf["size"] < 0):
-        problems.append("%s.size must be a non-negative integer" % where)
+    if "size" in leaf and not _is_count(leaf["size"]):
+        problems.append("%s.size must be a non-negative integer no larger than %d" % (where, MAX_COUNT))
     if "sha256" in leaf and not _is_sha256(leaf["sha256"]):
         problems.append("%s.sha256 must be 64 lowercase hex digits" % where)
     if "source" in leaf:
@@ -287,19 +303,22 @@ def _check_leaf_fitter(label, receipt, trimmed, problems):
         return
     for key, expected in (("leaf_surfaces", LEAF_SURFACES), ("triangles", LEAF_TRIANGLES)):
         value = result[key]
-        if not _is_int(value):
-            problems.append("%s: leaf_fitter.result.%s must be an integer" % (label, key))
+        if not _is_count(value):
+            problems.append("%s: leaf_fitter.result.%s must be an integer no larger than %d" % (label, key, MAX_COUNT))
         elif value != expected:
             problems.append("%s: leaf_fitter.result.%s %d, expected %d" % (label, key, value, expected))
-    residual = _as_decimal(result["maximum_relative_fit_error"])
-    shown = result["maximum_relative_fit_error"]
     name = "%s: leaf_fitter.result.maximum_relative_fit_error" % label
-    if residual is None or not residual.is_finite():
+    try:
+        residual = _as_decimal(result["maximum_relative_fit_error"])
+        shown = result["maximum_relative_fit_error"]
+        if residual is None or not residual.is_finite():
+            problems.append("%s must be a finite number" % name)
+        elif residual < 0:
+            problems.append("%s %s is negative" % (name, shown))
+        elif residual > RESIDUAL_BOUND:
+            problems.append("%s %s exceeds bound %s" % (name, shown, RESIDUAL_BOUND))
+    except ArithmeticError:
         problems.append("%s must be a finite number" % name)
-    elif residual < 0:
-        problems.append("%s %s is negative" % (name, shown))
-    elif residual > RESIDUAL_BOUND:
-        problems.append("%s %s exceeds bound %s" % (name, shown, RESIDUAL_BOUND))
 
 
 def _check_manifest(manifest_label, manifest, problems):
@@ -336,13 +355,13 @@ def _check_manifest(manifest_label, manifest, problems):
             schema.check_keys(entry, ENTRY_REQUIRED_KEYS, ENTRY_OPTIONAL_KEYS, where)
         except SchemaError as exc:
             problems.append(str(exc))
-        if "size" in entry and not (_is_int(entry["size"]) and entry["size"] >= 0):
-            problems.append("%s: size must be a non-negative integer" % where)
+        if "size" in entry and not _is_count(entry["size"]):
+            problems.append("%s: size must be a non-negative integer no larger than %d" % (where, MAX_COUNT))
         if "sha256" in entry and not _is_sha256(entry["sha256"]):
             problems.append("%s: sha256 must be 64 lowercase hex digits" % where)
         for key in ("vertices", "triangles"):
-            if key in entry and not (_is_int(entry[key]) and entry[key] >= 0):
-                problems.append("%s: %s must be a non-negative integer" % (where, key))
+            if key in entry and not _is_count(entry[key]):
+                problems.append("%s: %s must be a non-negative integer no larger than %d" % (where, key, MAX_COUNT))
         if "bounding_sphere" in entry:
             _check_bounding_sphere(where, entry["bounding_sphere"], problems)
         if path in entries:
@@ -434,13 +453,13 @@ def validate(receipt_label, receipt, receipt_bytes, manifest_label, manifest):
         if member is None:
             problems.append("%s: not in manifest" % path)
             continue
-        if member.get("size") != row["size"]:
+        if _manifest_value_usable(member, "size") and member.get("size") != row["size"]:
             problems.append("%s: size %d does not match manifest %s" % (path, row["size"], member.get("size")))
         if member.get("sha256") != row["sha256"]:
             problems.append("%s: sha256 does not match manifest" % path)
         if path.endswith(".lmesh"):
             for key in ("vertices", "triangles"):
-                if member.get(key) != row[key]:
+                if _manifest_value_usable(member, key) and member.get(key) != row[key]:
                     problems.append(
                         "%s: %s %d does not match manifest %s" % (path, key, row[key], member.get(key))
                     )
@@ -450,7 +469,7 @@ def validate(receipt_label, receipt, receipt_bytes, manifest_label, manifest):
         if member is None:
             problems.append("%s: not in manifest" % RECEIPT_MANIFEST_NAME)
         else:
-            if member.get("size") != len(receipt_bytes):
+            if _manifest_value_usable(member, "size") and member.get("size") != len(receipt_bytes):
                 problems.append(
                     "%s: receipt size %d does not match manifest %s"
                     % (receipt_label, len(receipt_bytes), member.get("size"))
@@ -634,7 +653,10 @@ def main(argv=None):
         print(str(exc), file=sys.stderr)
         return 1
 
-    problems = validate(str(receipt_path), receipt, receipt_bytes, str(manifest_path), manifest)
+    try:
+        problems = validate(str(receipt_path), receipt, receipt_bytes, str(manifest_path), manifest)
+    except ArithmeticError as exc:
+        problems = ["%s: numeric value rejected (%s)" % (receipt_path, exc.__class__.__name__)]
     if problems:
         return _report(problems)
 

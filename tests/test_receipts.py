@@ -61,6 +61,10 @@ class ReceiptTestCase(unittest.TestCase):
         mutate(manifest)
         return _write_text_bytes(self.dir / name, _json_text(manifest))
 
+    def _write_with_token(self, name, data, token):
+        """Write data as JSON with the placeholder string "__TOKEN__" replaced by a raw JSON number token."""
+        return _write_text_bytes(self.dir / name, _json_text(data).replace('"__TOKEN__"', token))
+
     def _entry(self, data, path):
         for entry in data["files"]:
             if entry["path"] == path:
@@ -99,6 +103,13 @@ class PositiveTests(ReceiptTestCase):
         code, out, err = _run(["--receipt", str(FIXTURE), "--manifest", str(MANIFEST)])
         self.assertEqual(code, 0, err)
         self.assertEqual(err, "")
+
+    def test_sphere_at_exact_bound_is_accepted(self):
+        data = copy.deepcopy(self.fixture)
+        self._entry(data, LEAF_BRANCHES_LOD0)["bounding_sphere"] = "__TOKEN__"
+        receipt = self._write_with_token("receipt-sphere-edge.json", data, "1000000000000.000000000000000000")
+        code, _, err = _run(["--receipt", str(receipt), "--manifest", str(MANIFEST)])
+        self.assertEqual(code, 0, err)
 
     def test_full_flag_is_accepted_as_alias(self):
         code, _, err = _run(["--receipt", str(FIXTURE), "--manifest", str(MANIFEST), "--full"])
@@ -252,6 +263,71 @@ class NegativeTests(ReceiptTestCase):
             "maximum_relative_fit_error 0.2000001 exceeds bound 0.20",
         )
 
+    def test_oversized_mesh_count_in_receipt_is_controlled(self):
+        data = copy.deepcopy(self.fixture)
+        self._entry(data, LEAF_BRANCHES_LOD0)["vertices"] = "__TOKEN__"
+        receipt = self._write_with_token("receipt-huge-count.json", data, "9" * 4300)
+        code, out, err = _run(["--receipt", str(receipt), "--manifest", str(MANIFEST)])
+        self.assertEqual(code, 1, err)
+        self.assertIn("%s: vertices must be a non-negative integer no larger than" % LEAF_BRANCHES_LOD0, err)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(out, "")
+
+    def test_oversized_mesh_count_in_manifest_is_controlled(self):
+        manifest = json.loads(MANIFEST.read_bytes().decode("utf-8"))
+        for entry in manifest["files"]:
+            if entry["path"] == LEAF_BRANCHES_LOD0:
+                entry["triangles"] = "__TOKEN__"
+        path = self._write_with_token("manifest-huge-count.json", manifest, "9" * 4300)
+        code, out, err = _run(["--receipt", str(FIXTURE), "--manifest", str(path)])
+        self.assertEqual(code, 1, err)
+        self.assertIn("triangles must be a non-negative integer no larger than", err)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(out, "")
+
+    def test_sphere_rounding_trap_in_receipt_is_refused(self):
+        data = copy.deepcopy(self.fixture)
+        self._entry(data, LEAF_BRANCHES_LOD0)["bounding_sphere"] = "__TOKEN__"
+        receipt = self._write_with_token("receipt-sphere-trap.json", data, "1000000000000.000000000000000001")
+        code, out, err = _run(["--receipt", str(receipt), "--manifest", str(MANIFEST)])
+        self.assertEqual(code, 1, err)
+        self.assertIn("%s: bounding_sphere must be four finite numbers" % LEAF_BRANCHES_LOD0, err)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(out, "")
+
+    def test_sphere_rounding_trap_in_manifest_is_refused(self):
+        manifest = json.loads(MANIFEST.read_bytes().decode("utf-8"))
+        for entry in manifest["files"]:
+            if entry["path"] == LEAF_BRANCHES_LOD0:
+                entry["bounding_sphere"] = "__TOKEN__"
+        path = self._write_with_token("manifest-sphere-trap.json", manifest, "1000000000000.000000000000000001")
+        code, out, err = _run(["--receipt", str(FIXTURE), "--manifest", str(path)])
+        self.assertEqual(code, 1, err)
+        self.assertIn("bounding_sphere must be four finite numbers", err)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(out, "")
+
+    def test_huge_plain_decimal_sphere_in_receipt_is_refused(self):
+        data = copy.deepcopy(self.fixture)
+        self._entry(data, LEAF_BRANCHES_LOD0)["bounding_sphere"] = "__TOKEN__"
+        receipt = self._write_with_token("receipt-sphere-huge.json", data, "1" + "0" * 1000000 + ".0")
+        code, out, err = _run(["--receipt", str(receipt), "--manifest", str(MANIFEST)])
+        self.assertEqual(code, 1, err)
+        self.assertIn("%s: bounding_sphere must be four finite numbers" % LEAF_BRANCHES_LOD0, err)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(out, "")
+
+    def test_huge_plain_decimal_sphere_in_manifest_is_refused(self):
+        manifest = json.loads(MANIFEST.read_bytes().decode("utf-8"))
+        for entry in manifest["files"]:
+            if entry["path"] == LEAF_BRANCHES_LOD0:
+                entry["bounding_sphere"] = "__TOKEN__"
+        path = self._write_with_token("manifest-sphere-huge.json", manifest, "1" + "0" * 1000000 + ".0")
+        code, out, err = _run(["--receipt", str(FIXTURE), "--manifest", str(path)])
+        self.assertEqual(code, 1, err)
+        self.assertIn("bounding_sphere must be four finite numbers", err)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(out, "")
 
     def test_missing_path_in_manifest(self):
         manifest = self._manifest_with(lambda m: m.update(files=[e for e in m["files"] if e["path"] != LEAF_LOD1]))
@@ -395,6 +471,25 @@ class AccountingValidatorTests(ReceiptTestCase):
         obj = self._accounting()
         obj["schema"] = "luminumbra.game.other.v1"
         self.assertEqual(len(resource_accounting.validate("acc.json", obj)), 1)
+
+    def test_scope_constant_matches_committed_evidence(self):
+        committed = json.loads(EVIDENCE.read_bytes().decode("utf-8"))
+        self.assertEqual(resource_accounting.SCOPE, committed["scope"])
+
+    def test_scope_must_be_the_mandated_string(self):
+        cases = {
+            "null": None,
+            "object": {},
+            "empty string": "",
+            "unrelated string": "tree-small-02 pack only",
+        }
+        for label, bad in cases.items():
+            with self.subTest(case=label):
+                obj = self._accounting()
+                obj["scope"] = bad
+                problems = resource_accounting.validate("acc.json", obj)
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn("scope", problems[0])
 
     def test_part_of_unhashable_type_is_a_problem(self):
         for bad in ([], {}):
