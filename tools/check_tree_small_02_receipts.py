@@ -84,6 +84,8 @@ NESTED_DIGEST_OBJECTS = ("processor", "source_manifest", "converter_script")
 LEAF_FITTER_KEYS = {"size", "sha256", "source", "result", "command", "lod_policy"}
 RESULT_KEYS = {"leaf_surfaces", "triangles", "maximum_relative_fit_error"}
 ENTRY_REQUIRED_KEYS = {"path", "size", "sha256"}
+MANIFEST_ROOT_KEYS = {"version", "install_dir", "archive", "files"}
+MANIFEST_ARCHIVE_KEYS = {"url", "size", "sha256", "uncompressed_size"}
 ENTRY_OPTIONAL_KEYS = {"vertices", "triangles", "bounding_sphere"}
 
 BEGIN_MARKER = "<!-- accounting:begin -->"
@@ -140,7 +142,9 @@ def _is_finite_number(item):
         return False
     if isinstance(item, Decimal):
         return item.is_finite()
-    return isinstance(item, (int, float)) and math.isfinite(item)
+    if isinstance(item, int):
+        return True
+    return isinstance(item, float) and math.isfinite(item)
 
 
 def _check_bounding_sphere(where, value, problems):
@@ -289,7 +293,22 @@ def _check_leaf_fitter(label, receipt, trimmed, problems):
 
 def _check_manifest(manifest_label, manifest, problems):
     """Return a path -> entry map for the manifest, reporting structural problems."""
-    files = manifest.get("files") if isinstance(manifest, dict) else None
+    if not isinstance(manifest, dict):
+        problems.append("%s: manifest must be a JSON object" % manifest_label)
+        return {}
+    try:
+        schema.check_keys(manifest, MANIFEST_ROOT_KEYS, set(), manifest_label)
+    except SchemaError as exc:
+        problems.append(str(exc))
+    archive = manifest.get("archive")
+    if isinstance(archive, dict):
+        try:
+            schema.check_keys(archive, MANIFEST_ARCHIVE_KEYS, set(), "%s: archive" % manifest_label)
+        except SchemaError as exc:
+            problems.append(str(exc))
+    else:
+        problems.append("%s: archive must be an object" % manifest_label)
+    files = manifest.get("files")
     if not isinstance(files, list):
         problems.append("%s: files must be a list" % manifest_label)
         return {}

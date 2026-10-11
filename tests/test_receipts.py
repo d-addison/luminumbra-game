@@ -192,6 +192,40 @@ class NegativeTests(ReceiptTestCase):
         self.assertIn("unknown key 'extra'", err)
         self.assertEqual(out, "")
 
+    def test_unknown_key_in_manifest_root(self):
+        manifest = self._manifest_with(lambda m: m.update(extra=1))
+        code, out, err = _run(["--receipt", str(FIXTURE), "--manifest", str(manifest)])
+        self.assertEqual(code, 1, err)
+        self.assertIn("unknown key 'extra'", err)
+        self.assertEqual(out, "")
+
+    def test_unknown_key_in_manifest_archive(self):
+        manifest = self._manifest_with(lambda m: m["archive"].update(extra=1))
+        code, out, err = _run(["--receipt", str(FIXTURE), "--manifest", str(manifest)])
+        self.assertEqual(code, 1, err)
+        self.assertIn("unknown key 'extra'", err)
+        self.assertEqual(out, "")
+
+    def test_huge_integer_bounding_sphere_in_receipt_is_controlled(self):
+        def mutate(data):
+            self._entry(data, LEAF_BRANCHES_LOD0)["bounding_sphere"] = [10**400, 0, 0, 1]
+
+        receipt = self._receipt_with(mutate)
+        code, out, err = _run(["--receipt", str(receipt), "--manifest", str(MANIFEST)])
+        self.assertEqual(code, 1, err)
+        self.assertNotIn("Traceback", err)
+
+    def test_huge_integer_bounding_sphere_in_manifest_is_controlled(self):
+        def mutate(manifest):
+            for entry in manifest["files"]:
+                if entry["path"] == LEAF_BRANCHES_LOD0:
+                    entry["bounding_sphere"] = [10**400, 0, 0, 1]
+
+        manifest = self._manifest_with(mutate)
+        code, out, err = _run(["--receipt", str(FIXTURE), "--manifest", str(manifest)])
+        self.assertEqual(code, 1, err)
+        self.assertNotIn("Traceback", err)
+
     def test_negative_residual_refused(self):
         self._expect_failure(
             lambda d: d["leaf_fitter"]["result"].update(maximum_relative_fit_error=-1),
