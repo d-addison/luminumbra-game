@@ -73,6 +73,9 @@ def _report(problems, ok_message):
     return 0
 
 
+DEEP_JSON_REASON = "not valid JSON: nesting is too deep"
+
+
 def _cmd_validate(args):
     root = _root_dir(args.root)
     if root is None:
@@ -80,7 +83,11 @@ def _cmd_validate(args):
     if not os.path.isdir(os.path.join(root, "content", "workloads")):
         print("no content/workloads/ directory")
         return 0
-    problems = workload.tree_problems(root, allow_pending=args.allow_pending)
+    try:
+        problems = workload.tree_problems(root, allow_pending=args.allow_pending)
+    except RecursionError:
+        print("%s: %s" % (root, DEEP_JSON_REASON))
+        return 1
     return _report(problems, "workloads ok")
 
 
@@ -91,7 +98,11 @@ def _cmd_check(args):
     if not os.path.isdir(os.path.join(root, "content", "workloads")):
         print("no content/workloads/ directory")
         return 0
-    problems = workload.tree_problems(root, allow_pending=True)
+    try:
+        problems = workload.tree_problems(root, allow_pending=True)
+    except RecursionError:
+        print("%s: %s" % (root, DEEP_JSON_REASON))
+        return 1
     return _report(problems, "traversal ok")
 
 
@@ -119,6 +130,9 @@ def _cmd_emit(args):
         return 2
     except SchemaError as exc:
         print(str(exc), file=sys.stderr)
+        return 1
+    except RecursionError:
+        print("%s: %s" % (path, DEEP_JSON_REASON), file=sys.stderr)
         return 1
     try:
         text = workload.emit_text(obj, stem, path)
@@ -161,10 +175,17 @@ def _cmd_identity(args):
     except ValueError as exc:
         print("%s: %s" % (path, exc))
         return 1
+    except RecursionError:
+        print("%s: %s" % (path, DEEP_JSON_REASON))
+        return 1
     if not isinstance(obj, dict):
         print("%s: preset must be a JSON object" % path)
         return 1
-    problems = identity.preset_restrictions(obj)
+    try:
+        problems = identity.preset_restrictions(obj)
+    except RecursionError:
+        print("%s: %s" % (path, DEEP_JSON_REASON))
+        return 1
     if problems:
         for problem in problems:
             print("%s: %s" % (path, problem))

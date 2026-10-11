@@ -139,6 +139,14 @@ def _tree_problems(files, release=False, allow_pending=False):
         return validate_content.validate_tree(tmp, allow_pending=allow_pending, release=release)
 
 
+def _source_bytes(duration_text, speed_text):
+    """Return the surface-flight source with the given duration and speed number tokens."""
+    text = json.dumps(_surface_flight())
+    text = text.replace('"duration_seconds": 60', '"duration_seconds": ' + duration_text, 1)
+    text = text.replace('"speed_mps": 8', '"speed_mps": ' + speed_text, 1)
+    return text.encode("utf-8")
+
+
 class CommittedWorkloadTests(unittest.TestCase):
     def test_committed_content_validates_with_allow_pending(self):
         self.assertEqual(validate_content.validate_tree(str(_REPO), allow_pending=True, release=False), [])
@@ -628,6 +636,102 @@ class ReceiptTests(unittest.TestCase):
     def test_receipt_outside_receipts_dir_is_refused(self):
         problems = _tree_problems({"content/elsewhere.json": _json_bytes(_receipt())})
         self.assertEqual(problems, ["content/elsewhere.json: receipts must live under content/receipts/"])
+
+
+class MissingTraversalTests(unittest.TestCase):
+    def test_release_refuses_missing_committed_traversal(self):
+        files = _good_tree(_receipt())
+        del files[_TRAVERSAL_PATH]
+        problems = _tree_problems(files, release=True)
+        expected = "%s: missing committed traversal %s" % (_WORKLOAD_PATH, _TRAVERSAL_PATH)
+        self.assertEqual(problems.count(expected), 1, problems)
+
+    def test_allow_pending_refuses_missing_committed_traversal(self):
+        files = _good_tree(_receipt())
+        del files[_TRAVERSAL_PATH]
+        problems = _tree_problems(files, allow_pending=True)
+        expected = "%s: missing committed traversal %s" % (_WORKLOAD_PATH, _TRAVERSAL_PATH)
+        self.assertEqual(problems.count(expected), 1, problems)
+
+    def test_normal_mode_refuses_missing_committed_traversal_once(self):
+        files = _good_tree()
+        del files[_TRAVERSAL_PATH]
+        problems = _tree_problems(files)
+        expected = "%s: missing committed traversal %s" % (_WORKLOAD_PATH, _TRAVERSAL_PATH)
+        self.assertEqual(problems, [expected])
+
+
+class DurationToleranceTests(unittest.TestCase):
+    def test_one_tick_duration_is_accepted_and_emitted(self):
+        source = _source_bytes("0.03333333333333333", "0.001")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "surface-flight.json")
+            path.write_bytes(source)
+            code, out, err = _run("emit", str(path))
+        self.assertEqual(code, 0, err)
+        self.assertIn("duration_seconds 0.03333333333333333\n", out)
+        self.assertIn("expected_ticks 1\n", out)
+        self.assertEqual(_tree_problems({_WORKLOAD_PATH: source, _TRAVERSAL_PATH: out.encode("utf-8")}), [])
+
+    def test_one_tick_duration_passes_lumlib_validate(self):
+        from lumlib import traversal as lum_traversal
+
+        source = _source_bytes("0.03333333333333333", "0.001")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "surface-flight.json")
+            path.write_bytes(source)
+            code, out, err = _run("emit", str(path))
+        self.assertEqual(code, 0, err)
+        traversal_obj = lum_traversal.parse(out)
+        self.assertEqual(traversal_obj.expected_ticks, 1)
+        lum_traversal.validate(traversal_obj)
+
+    def test_duration_off_the_tick_grid_is_refused(self):
+        obj = _surface_flight()
+        obj["duration_seconds"] = Decimal("0.0333334")
+        problems = _problems(obj)
+        self.assertTrue(
+            any("duration_seconds * tick_rate must be an integer" in p for p in problems), problems
+        )
+
+
+class DeepJsonTests(unittest.TestCase):
+    _DEEP = ("[" * 200000 + "]" * 200000).encode("utf-8")
+    _REASON = "not valid JSON: nesting is too deep"
+
+    def test_emit_refuses_deep_json_without_traceback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "surface-flight.json")
+            path.write_bytes(self._DEEP)
+            code, out, err = _run("emit", str(path))
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertEqual(err.splitlines(), ["%s: %s" % (path, self._REASON)])
+
+    def test_validate_refuses_deep_workload_without_traceback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_tree(tmp, {_WORKLOAD_PATH: self._DEEP})
+            code, out, err = _run("validate", "--root", tmp)
+        self.assertEqual(code, 1, err)
+        self.assertEqual(out.splitlines(), ["%s: %s" % (_WORKLOAD_PATH, self._REASON)])
+        self.assertNotIn("Traceback", err)
+
+    def test_check_refuses_deep_workload_without_traceback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_tree(tmp, {_WORKLOAD_PATH: self._DEEP})
+            code, out, err = _run("check", "--root", tmp)
+        self.assertEqual(code, 1, err)
+        self.assertEqual(out.splitlines(), ["%s: %s" % (_WORKLOAD_PATH, self._REASON)])
+        self.assertNotIn("Traceback", err)
+
+    def test_identity_refuses_deep_preset_without_traceback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "preset.json")
+            path.write_bytes(self._DEEP)
+            code, out, err = _run("identity", str(path))
+        self.assertEqual(code, 1)
+        self.assertEqual(out.splitlines(), ["%s: %s" % (path, self._REASON)])
+        self.assertNotIn("Traceback", err)
 
 
 if __name__ == "__main__":

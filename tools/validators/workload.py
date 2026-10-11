@@ -14,7 +14,7 @@ import hashlib
 import os
 import posixpath
 import re
-from decimal import Context, Decimal
+from decimal import ROUND_HALF_EVEN, Context, Decimal
 
 from lumlib import schema, traversal
 from lumlib.schema import SchemaError
@@ -94,6 +94,9 @@ _REVISION_RE = re.compile(r"[0-9a-f]{40}")
 # duration token accepted by _duration (at most 100 characters).
 _EXACT = Context(prec=400)
 _MAX_DURATION_CHARS = 100
+# Same tolerance as traversal.TICK_TOLERANCE (1e-9 ticks), built from a string so
+# that no exponent token appears in the source text.
+_TICK_SLACK = Decimal("0.000000001")
 
 
 class WorkloadError(ValueError):
@@ -124,19 +127,23 @@ def _match(value, pattern, key: str, shape: str) -> None:
 
 
 def _duration(value):
-    """Return (source text, expected tick count) for duration_seconds."""
+    """Return (source text, expected tick count) for duration_seconds.
+
+    The exact product duration * tick_rate must lie within the engine tolerance of
+    an integer count in [1, 18000]; the count is the nearest integer to the product.
+    """
     text = _number_text(value, "duration_seconds")
     if len(text) > _MAX_DURATION_CHARS:
         raise WorkloadError("duration_seconds has too many digits")
     seconds = Decimal(text)
     if seconds <= 0:
         raise WorkloadError("duration_seconds must be greater than 0")
-    ticks = _EXACT.multiply(seconds, Decimal(traversal.REQUIRED_TICK_RATE))
-    if ticks != ticks.to_integral_value():
-        raise WorkloadError("duration_seconds * tick_rate must be an integer")
-    count = int(ticks)
+    product = _EXACT.multiply(seconds, Decimal(traversal.REQUIRED_TICK_RATE))
+    count = int(product.to_integral_value(rounding=ROUND_HALF_EVEN))
     if not 1 <= count <= traversal.MAX_EXPECTED_TICKS:
         raise WorkloadError("duration_seconds * tick_rate must be in [1, 18000]")
+    if abs(_EXACT.subtract(product, Decimal(count))) > _TICK_SLACK:
+        raise WorkloadError("duration_seconds * tick_rate must be an integer")
     return text, count
 
 
@@ -348,15 +355,39 @@ def check_workload(obj, stem: str, where: str, allow_pending: bool, release: boo
             raise WorkloadError(str(exc)) from None
 
 
+def _missing_traversal_problem(obj, stem: str, where: str, root):
+    """Return the problem line when a pinned, event-free source has no committed traversal.
+
+    Needs ROOT; without a content root (unit-level checks) the file cannot be looked
+    up, so no problem is reported. The check applies in every mode.
+    """
+    if root is None or not isinstance(obj, dict):
+        return None
+    if obj.get("status") != STATUS_PINNED or obj.get("events"):
+        return None
+    trav_rel = TRAVERSAL_DIR + "/" + stem + TRAVERSAL_SUFFIX
+    if os.path.isfile(os.path.join(root, *trav_rel.split("/"))):
+        return None
+    return "%s: missing committed traversal %s" % (where, trav_rel)
+
+
 def workload_problems(obj, stem: str, where: str, allow_pending: bool, release: bool, root=None) -> list:
-    """Return the problem lines for a workload source (an empty list when valid)."""
+    """Return the problem lines for a workload source (an empty list when valid).
+
+    This is the single place that reports a missing committed traversal, so the
+    registered validator and tree_problems never report it twice.
+    """
+    problems = []
     try:
         check_workload(obj, stem, where, allow_pending, release, root)
     except SchemaError as exc:
-        return [str(exc)]
+        problems.append(str(exc))
     except WorkloadError as exc:
-        return ["%s: %s" % (where, exc)]
-    return []
+        problems.append("%s: %s" % (where, exc))
+    missing = _missing_traversal_problem(obj, stem, where, root)
+    if missing is not None:
+        problems.append(missing)
+    return problems
 
 
 def emit_text(obj, stem: str, where: str) -> str:
@@ -381,6 +412,8 @@ def _read_json(full: str, rel: str):
         prefix = full + ": "
         reason = text[len(prefix):] if text.startswith(prefix) else text
         raise WorkloadError("not valid JSON: %s" % reason) from None
+    except RecursionError:
+        raise WorkloadError("not valid JSON: nesting is too deep") from None
 
 
 def traversal_text_problems(rel: str, text: str, root: str) -> list:
@@ -427,10 +460,6 @@ def tree_problems(root: str, allow_pending: bool, release: bool = False) -> list
             problems.append("%s: %s" % (rel, exc))
             continue
         problems.extend(workload_problems(obj, stem, rel, allow_pending, release, root))
-        if isinstance(obj, dict) and obj.get("status") == STATUS_PINNED and not obj.get("events"):
-            trav_rel = TRAVERSAL_DIR + "/" + stem + TRAVERSAL_SUFFIX
-            if not os.path.isfile(os.path.join(root, *trav_rel.split("/"))):
-                problems.append("%s: missing committed traversal %s" % (rel, trav_rel))
 
     traversal_dir = os.path.join(root, *TRAVERSAL_DIR.split("/"))
     if os.path.isdir(traversal_dir):
@@ -495,6 +524,11 @@ def _check_receipt(path: str, obj, root: str, release: bool) -> None:
             digest = hashlib.sha256(handle.read()).hexdigest()
         if digest != obj["traversal_sha256"]:
             raise WorkloadError("traversal_sha256 does not match the committed traversal of '%s'" % workload_id)
+    elif release:
+        raise WorkloadError(
+            "traversal_sha256 cannot be checked: missing committed traversal %s"
+            % (TRAVERSAL_DIR + "/" + workload_id + TRAVERSAL_SUFFIX)
+        )
 
 
 def check_receipt(path, obj, ctx):

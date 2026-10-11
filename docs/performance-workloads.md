@@ -50,8 +50,10 @@ emitter refuses them.
 - `id` is lowercase kebab-case and equals the file stem. `kind` is
   `camera-traversal`. `preset` uses `[a-z0-9_-]+`.
 - `seed` is an integer in `[0, 4294967295]`. `tick_rate` is 30.
-- `duration_seconds * tick_rate` must be an exact integer in `[1, 18000]`. The
-  check uses exact decimal arithmetic.
+- `duration_seconds * tick_rate` must be within `1e-9` ticks of an integer in
+  `[1, 18000]`, the engine tolerance. The check uses exact decimal arithmetic, and
+  the expected tick count is the nearest integer to the product. So
+  `0.03333333333333333` is one tick, while `0.0333334` (1.000002 ticks) is refused.
 - `speed_mps` is greater than 0. Exponent number tokens (`8e0`, `1E-8`) are refused
   when the file is parsed, so no validator sees them. Numbers are rendered in
   fixed-point form, so `0.00000001` stays `0.00000001`.
