@@ -7,7 +7,9 @@ prepares preset files for the engine. The engine contract is
 `b56cdba12e425ed2786778d5b02c98ba61466584`.
 
 Status: the files and validators are committed. Nothing on this page has been
-verified natively. Every execution-bound step is marked NEEDS-NATIVE-RUN.
+verified natively. Every execution-bound step is marked NEEDS-NATIVE-RUN, and
+the steps that need engine instrumentation not yet available are marked
+BLOCKED.
 
 ## Purpose
 
@@ -32,8 +34,12 @@ differ from `caverns`, apart from `name` and `description`:
 
 The validator (`tools/validators/scene.py`) refuses any preset whose features
 the loader would clamp, and requires these three values exactly for
-`cave_dense`. A test compares the preset with the real caverns fixture and
-checks that the differences are exactly these three values plus `name` and
+`cave_dense`. For `cave_dense` it also checks the full key set of the
+generation parameters against the caverns structure, so a missing or unknown key
+at any level is refused. Other presets must have exactly the four top-level keys
+`name`, `description`, `schema_rev` and `generation_params`, with a non-empty
+`generation_params`. A test compares the preset with the real caverns fixture
+and checks that the differences are exactly these three values plus `name` and
 `description`.
 
 ### Identity sidecar
@@ -41,8 +47,9 @@ checks that the differences are exactly these three values plus `name` and
 The preset identity is the 16-hex-digit FNV-1a 64-bit hash of the canonical
 JSON of the preset object. It is not stored inside the preset file. It lives in
 `content/presets/cave_dense.identity.json`
-(`luminumbra.game.preset-identity.v1`) with three keys:
+(`luminumbra.game.preset-identity.v1`) with four keys:
 
+- `schema`: the schema id;
 - `preset`: the preset name, which must equal the file stem;
 - `file_sha256`: the sha256 of the preset file bytes;
 - `preset_identity`: the identity token of the parsed preset.
@@ -103,15 +110,40 @@ complete, `below_horizon_sky_percent` is at most 2, `seam_bands` is 0, and
 
 ## Discovery oracle (NATIVE)
 
-The oracle is a native measurement, not an offline claim. NEEDS-NATIVE-RUN: on
-the qualified machine, count cave openings in a fixed probe window for
-`cave_dense` and for `caverns`, and compare the two counts. The threshold is
-recorded in the scene set when the native run supplies it. Nothing in this
-repository asserts that `cave_dense` has more openings than `caverns`.
+The oracle is a native measurement, not an offline claim. Nothing in this
+repository asserts that `cave_dense` has more surface cave openings than
+`caverns`, and no threshold below has been measured.
 
-The deep interior (`tunnel-interior`) and a mouth beyond the 4 km noise-cave
-cutoff (`arch-8km`, `horizon-16km`) are part of the probe, not only the 2 km
-mouth.
+### Support at the baseline
+
+- Supported today: the engine's `FarLodHorizon` gate, run through
+  `validate-engine-frontier` at the baseline above. It covers three engine
+  presets. It does not compute an independent wanted set.
+- BLOCKED: per-row, per-profile and per-display qualification evidence for the
+  scene set. It needs engine instrumentation that is not yet available, and it
+  depends on the engine acceptance workstream. Until that instrumentation exists,
+  no receipt for a scene-set row can be produced from a supported command.
+- BLOCKED: counting surface cave openings. No command or instrument that counts
+  them is named at the baseline. The counting step of the procedure below uses
+  that instrumentation and cannot run until it exists.
+
+### Discovery probe (fixed procedure, NEEDS-NATIVE-RUN)
+
+1. Set the probe window to a 4096 m by 4096 m square centered on the world
+   origin, with seed 424242.
+2. Using the same window and seed, count the surface cave openings for the
+   `caverns` preset. Record the count as C.
+3. Using the same window and seed, count the surface cave openings for the
+   `cave_dense` preset. Record the count as D.
+4. Record C and D together with the engine revision, the game revision and the
+   release-candidate git SHA the counts were taken on.
+5. Apply the proposed rule: D must be at least 1.25 times C. Because a C of 0
+   makes that rule vacuous, D must also be at least 1. Both thresholds are
+   PROPOSED values. They are recorded here only as proposals and were never
+   measured. A measured threshold is written into the scene set only after the
+   native run supplies it.
+6. The probe also has to record a cave opening beyond the 4 km noise-cave cutoff.
+   The `arch-8km` and `horizon-16km` stations are the beyond-4 km cases.
 
 ## Scene receipts
 
@@ -134,15 +166,22 @@ No receipt is committed. Receipts are produced by the native run.
 
 `tools/export_engine_content.py` maps `content/presets/<name>.json` to
 `worlds/atlas/presets/<name>.json` in the engine layout. Sidecars are not
-exported.
+exported, but each preset and its sibling `.identity.json` are validated before
+any output. A stale hash, a wrong identity or a malformed sidecar refuses the
+export.
 
 - With no option it prints the manifest, one `sha256  mapped/path` line per
   file.
 - `--out DIR` writes the mapped files, byte for byte, under `DIR`. `DIR` must be
-  absent or empty, and it must not contain a `.git` component.
+  absent or empty. The destination is resolved, including symlinks, and refused
+  when the resolved path has a `.git` component in any letter case, or lies
+  inside the `content/` tree (exit 2).
 - `--check ENGINE_ROOT` compares each mapped file with the engine copy and
   prints one `PATH: differs` or `PATH: missing` line for each mismatch. It exits
   0 only when every file matches.
+- An I/O failure (for example, an output path whose parent is a file, or an
+  engine root that is a file) prints one `PATH: reason` line and exits 1. A
+  missing `--check` root is a usage error and exits 2.
 - `--out` and `--check` are mutually exclusive (exit 2). An invalid preset
   refuses the export (exit 1).
 
@@ -166,16 +205,23 @@ out of scope for this page.
 | `preset_identity` | 16 lowercase hex digits; checked against the sidecar |
 | `content_identity` | 1 to 20 decimal digits |
 | `adapter` | contains the qualified renderer name `RTX 5070 Ti` |
-| `engine_revision`, `game_revision` | 40 lowercase hex digits |
+| `engine_revision`, `game_revision` | 40 lowercase hex digits; `game_revision` is the release-candidate SHA |
 | `disposition` | `verdict` (`accepted`, `defect-open`, `defect-fixed`, `waived-with-reason`) and a non-empty `note` |
 
 ## Native handoff
 
-| Step | Owner | Commands | Receipts or output | Completion criteria | Status |
-|---|---|---|---|---|---|
-| Discovery of station and control poses | operator on the qualified machine | the engine's distant-world discovery probe (named in `native.discovery_probe`) | pose per row, cave-opening count per preset in the probe window | every row has a pose and status discovered; the arch-8km and horizon-16km cases are recorded | NEEDS-NATIVE-RUN |
-| Cave-count oracle | operator on the qualified machine | the same probe, `cave_dense` against `caverns` | cave-opening counts and the threshold written into the scene set | threshold recorded; no offline claim | NEEDS-NATIVE-RUN |
-| Qualification of each row and profile | operator on the qualified machine | the far horizon gate in the engine (`FarLodHorizon`) for each display and profile | one scene receipt per row, profile and display | each receipt qualified, or carries an allowed non-accepted disposition | NEEDS-NATIVE-RUN |
-| Identity echo for cave_dense | operator on the qualified machine | the engine preset identity echo; a mismatch makes the engine refuse with exit 2 | identity echo output | echo equals the sidecar `preset_identity` | NEEDS-NATIVE-RUN |
-| Engine copy of the preset | coordinator, engine pull request | `tools/export_engine_content.py --out DIR`, then the engine copy, then `--check ENGINE_ROOT` | exported manifest and check output | `--check` exits 0 against the engine tree | PENDING engine pull request |
-| Release gate | coordinator | `tools/validate_content.py --release` | validator output | exits 0 with no scene problems; all rows discovered and qualified | blocked until the rows above are complete |
+Owner for every row is the operator on the qualified machine, except the
+engine copy and the release gate, which the coordinator owns. A row whose
+command is not named at the baseline has no command and stays open.
+
+| Step | Commands | Receipts or output | Completion criteria | Status |
+|---|---|---|---|---|
+| Release-candidate git SHA | record the SHA of the release candidate that the run uses | the SHA in the handoff record; every receipt's `game_revision` equals it | the SHA is recorded and matches every receipt | NEEDS-NATIVE-RUN |
+| Archive sha256 | record the sha256 of the release archive the run uses | the sha256 in the handoff record, next to the SHA | the sha256 is recorded with the RC SHA; no receipt field carries it yet | NEEDS-NATIVE-RUN |
+| Engine gate at baseline | `FarLodHorizon` through `validate-engine-frontier`, for the three engine presets it covers | gate output for those presets | output recorded; no wanted set is claimed from it | NEEDS-NATIVE-RUN |
+| Station and control poses | no command named at the baseline | a pose per row | every row has a pose and status discovered; the arch-8km and horizon-16km cases are recorded | NEEDS-NATIVE-RUN (no command yet) |
+| Cave-count oracle | the discovery probe above, `caverns` and `cave_dense` in the fixed window | counts C and D, the rule outcome | both counts recorded; the threshold is recorded in the scene set only after it is measured | BLOCKED (counting instrument not available) |
+| Qualification of each row, profile and display | `FarLodHorizon` per-row evidence is not available | one scene receipt per row, profile and display | each receipt qualified, or carries an allowed non-accepted disposition | BLOCKED (engine instrumentation; engine acceptance workstream) |
+| Identity echo for cave_dense | no command named at the baseline | the engine's reported identity for `cave_dense` | the reported identity equals the sidecar `preset_identity` | NEEDS-NATIVE-RUN (no command yet) |
+| Engine copy of the preset | `python3 -I tools/export_engine_content.py --out DIR`, then the engine copy, then `python3 -I tools/export_engine_content.py --check ENGINE_ROOT` | exported manifest and check output | `--check` exits 0 against the engine tree | PENDING engine pull request |
+| Release gate | `python3 -I tools/validate_content.py --root . --release` | validator output | exits 0 with no scene problems; all rows discovered and qualified | blocked until the rows above are complete |

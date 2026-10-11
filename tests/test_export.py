@@ -1,6 +1,8 @@
 import contextlib
 import hashlib
 import io
+import json
+import os
 import shutil
 import sys
 import tempfile
@@ -16,6 +18,7 @@ import export_engine_content as exporter  # noqa: E402
 
 _PRESETS = _REPO / "content" / "presets"
 _MAPPED = "worlds/atlas/presets/cave_dense.json"
+_SIDECAR = "content/presets/cave_dense.identity.json"
 
 
 def _run(argv):
@@ -28,6 +31,25 @@ def _run(argv):
 
 def _sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _write(path, text):
+    """Write UTF-8 bytes verbatim; Path.write_text would turn LF into CRLF on Windows."""
+    Path(path).write_bytes(text.encode("utf-8"))
+
+
+def _symlinks_supported():
+    with tempfile.TemporaryDirectory() as probe:
+        target = os.path.join(probe, "target")
+        os.mkdir(target)
+        try:
+            os.symlink(target, os.path.join(probe, "link"), target_is_directory=True)
+        except (OSError, NotImplementedError):
+            return False
+    return True
+
+
+_SYMLINKS = _symlinks_supported()
 
 
 class ExportTests(unittest.TestCase):
@@ -44,6 +66,11 @@ class ExportTests(unittest.TestCase):
         (root / "content" / "presets").mkdir(parents=True)
         for item in _PRESETS.iterdir():
             shutil.copy(item, root / "content" / "presets" / item.name)
+        return root
+
+    def _sidecar_copy_with(self, name, sidecar_text):
+        root = self._content_copy(name)
+        _write(root / _SIDECAR, sidecar_text)
         return root
 
     def test_manifest_lists_cave_dense_only_with_matching_hashes(self):
@@ -68,11 +95,11 @@ class ExportTests(unittest.TestCase):
         out_dir = self.tmp / "busy"
         out_dir.mkdir()
         keep = out_dir / "keep.txt"
-        keep.write_text("keep\n", encoding="utf-8")
+        _write(keep, "keep\n")
         code, _, err = _run(["--out", str(out_dir)])
         self.assertEqual(code, 2)
         self.assertIn("not empty", err)
-        self.assertEqual(keep.read_text(encoding="utf-8"), "keep\n")
+        self.assertEqual(keep.read_bytes(), b"keep\n")
         self.assertFalse((out_dir / "worlds").exists())
 
     def test_out_refuses_git_component(self):
@@ -81,6 +108,48 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn(".git", err)
         self.assertFalse(out_dir.exists())
+
+    def test_out_refuses_upper_case_git_component(self):
+        out_dir = self.tmp / ".GIT" / "export"
+        code, _, err = _run(["--out", str(out_dir)])
+        self.assertEqual(code, 2)
+        self.assertIn(".git", err)
+        self.assertFalse(out_dir.exists())
+
+    @unittest.skipUnless(_SYMLINKS, "symlinks are not available on this platform")
+    def test_out_refuses_symlink_alias_into_git_directory(self):
+        git_dir = self.tmp / ".git"
+        git_dir.mkdir()
+        alias = self.tmp / "alias"
+        os.symlink(str(git_dir), str(alias), target_is_directory=True)
+        code, _, err = _run(["--out", str(alias / "export")])
+        self.assertEqual(code, 2)
+        self.assertIn(".git", err)
+        self.assertFalse((git_dir / "export").exists())
+
+    def test_out_refuses_destination_inside_content_tree(self):
+        root = self._content_copy("ctree")
+        out_dir = root / "content" / "export"
+        code, _, err = _run(["--root", str(root), "--out", str(out_dir)])
+        self.assertEqual(code, 2)
+        self.assertIn("content tree", err)
+        self.assertFalse(out_dir.exists())
+
+    def test_plain_out_path_is_accepted(self):
+        out_dir = self.tmp / "plain" / "export"
+        code, _, err = _run(["--out", str(out_dir)])
+        self.assertEqual(code, 0, err)
+        self.assertTrue((out_dir / "worlds" / "atlas" / "presets" / "cave_dense.json").is_file())
+
+    def test_out_whose_parent_is_a_file_exits_1(self):
+        blocker = self.tmp / "blocker"
+        _write(blocker, "file\n")
+        out_dir = blocker / "export"
+        code, out, _ = _run(["--out", str(out_dir)])
+        self.assertEqual(code, 1)
+        lines = out.splitlines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertTrue(lines[0].startswith("%s: cannot write output: " % out_dir), lines[0])
 
     def test_check_passes_on_exported_copy(self):
         engine = self.tmp / "engine"
@@ -106,6 +175,13 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(out.splitlines(), ["%s: missing" % _MAPPED])
 
+    def test_check_root_that_is_a_file_exits_1(self):
+        engine = self.tmp / "engine-file"
+        _write(engine, "not a directory\n")
+        code, out, _ = _run(["--check", str(engine)])
+        self.assertEqual(code, 1)
+        self.assertEqual(out.splitlines(), ["%s: not a directory" % engine])
+
     def test_out_and_check_together_exit_2(self):
         code, _, err = _run(["--out", str(self.tmp / "a"), "--check", str(self.tmp)])
         self.assertEqual(code, 2)
@@ -121,7 +197,7 @@ class ExportTests(unittest.TestCase):
         root = self._content_copy("bad")
         preset = root / "content" / "presets" / "cave_dense.json"
         text = preset.read_text(encoding="utf-8")
-        preset.write_text(text.replace('"max_feature_radius": 52.0', '"max_feature_radius": 110.0', 1), encoding="utf-8")
+        _write(preset, text.replace('"max_feature_radius": 52.0', '"max_feature_radius": 110.0', 1))
         out_dir = self.tmp / "blocked"
         code, out, _ = _run(["--root", str(root), "--out", str(out_dir)])
         self.assertEqual(code, 1)
@@ -134,6 +210,36 @@ class ExportTests(unittest.TestCase):
         code, out, _ = _run(["--root", str(root)])
         self.assertEqual(code, 1)
         self.assertIn("missing identity sidecar", out)
+
+    def _assert_sidecar_refused(self, sidecar_text, needle):
+        root = self._sidecar_copy_with("sidecar", sidecar_text)
+        out_dir = self.tmp / "refused"
+        code, out, _ = _run(["--root", str(root), "--out", str(out_dir)])
+        self.assertEqual(code, 1)
+        self.assertIn(_SIDECAR + ": ", out)
+        self.assertIn(needle, out)
+        self.assertFalse(out_dir.exists())
+
+        engine = self.tmp / "engine-empty"
+        engine.mkdir()
+        code, out, _ = _run(["--root", str(root), "--check", str(engine)])
+        self.assertEqual(code, 1)
+        self.assertIn(needle, out)
+        self.assertNotIn(": missing", out)
+        self.assertEqual(list(engine.iterdir()), [])
+
+    def test_malformed_sidecar_blocks_export_and_check(self):
+        self._assert_sidecar_refused("{not json\n", "not valid JSON")
+
+    def test_stale_sidecar_hash_blocks_export_and_check(self):
+        sidecar = json.loads((_PRESETS / "cave_dense.identity.json").read_text(encoding="utf-8"))
+        sidecar["file_sha256"] = "0" * 64
+        self._assert_sidecar_refused(json.dumps(sidecar, indent=2) + "\n", "file_sha256 does not match")
+
+    def test_wrong_sidecar_identity_blocks_export_and_check(self):
+        sidecar = json.loads((_PRESETS / "cave_dense.identity.json").read_text(encoding="utf-8"))
+        sidecar["preset_identity"] = "0" * 16
+        self._assert_sidecar_refused(json.dumps(sidecar, indent=2) + "\n", "preset_identity does not match")
 
 
 if __name__ == "__main__":

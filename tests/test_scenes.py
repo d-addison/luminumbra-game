@@ -253,6 +253,26 @@ class SceneSetTests(unittest.TestCase):
         problems = scene.check_scene_set("content/other/distant-world.json", _scene_set(), _ctx(True))
         _assert_problem(self, problems, "scene sets must live in content/scenes/<id>.json")
 
+    def test_unknown_pose_key_refused(self):
+        obj = _discovered_set()
+        obj["stations"][0]["pose"]["extra"] = 1
+        _assert_problem(self, _set_problems(obj), "pose: unknown key 'extra'")
+
+    def test_unknown_native_key_refused(self):
+        obj = _scene_set()
+        obj["native"]["extra"] = 1
+        _assert_problem(self, _set_problems(obj), "native: unknown key 'extra'")
+
+    def test_unknown_tier_key_refused(self):
+        obj = _scene_set()
+        obj["stations"][0]["qualification"]["tiers"] = [{"tier": 0, "complete": True, "extra": 1}]
+        _assert_problem(self, _set_problems(obj), "unknown key 'extra'")
+
+    def test_unknown_disposition_key_refused(self):
+        obj = _scene_set()
+        obj["stations"][0]["dispositions"]["quality"] = {"verdict": "accepted", "note": "ok", "extra": 1}
+        _assert_problem(self, _set_problems(obj), "unknown key 'extra'")
+
 
 class PresetTests(unittest.TestCase):
     def setUp(self):
@@ -365,6 +385,46 @@ class PresetTests(unittest.TestCase):
         sidecar["extra"] = "x"
         text = json.dumps(sidecar, indent=2) + "\n"
         _assert_problem(self, self._check(text, _SIDECAR_PATH), "unknown key 'extra'")
+
+    def _edited(self, edit):
+        """Return the committed cave_dense preset, re-serialised after EDIT changes its object."""
+        obj = json.loads(self.preset_text)
+        edit(obj)
+        return json.dumps(obj, indent=2) + "\n"
+
+    def test_empty_generation_params_refused_for_cave_dense(self):
+        text = self._edited(lambda obj: obj.update(generation_params={}))
+        _assert_problem(self, self._check(text), "generation_params must be a non-empty object")
+
+    def test_empty_generation_params_refused_for_any_preset(self):
+        text = self._edited(lambda obj: obj.update(generation_params={}))
+        problems = scene.check_preset_file("content/presets/ghost.json", text, _ctx())
+        _assert_problem(self, problems, "generation_params must be a non-empty object")
+
+    def test_missing_features_refused_for_cave_dense(self):
+        text = self._edited(lambda obj: obj["generation_params"].pop("features"))
+        _assert_problem(self, self._check(text), "generation_params is missing key 'features'")
+
+    def test_missing_cave_dense_feature_refused(self):
+        text = self._edited(lambda obj: obj["generation_params"]["features"].pop("cave_threshold"))
+        _assert_problem(self, self._check(text), "cave_threshold is missing for cave_dense")
+
+    def test_unknown_top_level_key_refused_for_any_preset(self):
+        text = self._edited(lambda obj: obj.update(extra=1))
+        problems = scene.check_preset_file("content/presets/ghost.json", text, _ctx())
+        _assert_problem(self, problems, "unknown key 'extra'")
+
+    def test_unknown_nested_key_refused_for_cave_dense(self):
+        text = self._edited(lambda obj: obj["generation_params"]["features"].update(extra_knob=1))
+        _assert_problem(self, self._check(text), "generation_params.features has unknown key 'extra_knob'")
+
+    def test_missing_nested_key_refused_for_cave_dense(self):
+        text = self._edited(lambda obj: obj["generation_params"]["terrain"]["hydro"].pop("solubility"))
+        _assert_problem(self, self._check(text), "generation_params.terrain.hydro is missing key 'solubility'")
+
+    def test_malformed_spline_pair_refused_for_cave_dense(self):
+        text = self._edited(lambda obj: obj["generation_params"]["terrain"]["shaping"]["erosion_spline"].append([1.0]))
+        _assert_problem(self, self._check(text), "erosion_spline[6] must be a pair of two numbers")
 
 
 def _leaves(obj, prefix=""):
@@ -500,6 +560,47 @@ class SceneReceiptTests(unittest.TestCase):
 
     def test_scene_identity_pattern_refused(self):
         _assert_problem(self, _receipt_problems(_receipt(scene_identity="bad id")), "scene_identity must be")
+
+    def test_unknown_receipt_key_refused(self):
+        _assert_problem(self, _receipt_problems(_receipt(extra=1)), "unknown key 'extra'")
+
+    def test_future_receipt_schema_refused(self):
+        problems = _receipt_problems(_receipt(schema="luminumbra.game.scene-receipt.v2"))
+        _assert_problem(self, problems, "future schema version")
+
+    def test_empty_tiers_refused(self):
+        _assert_problem(self, _receipt_problems(_receipt(tiers=[])), "tiers must be a non-empty array")
+
+    def test_duplicate_tier_numbers_refused(self):
+        tiers = [{"tier": 0, "complete": True}, {"tier": 0, "complete": True}]
+        _assert_problem(self, _receipt_problems(_receipt(tiers=tiers)), "tiers must be unique and ascending")
+
+    def test_non_ascending_tiers_refused(self):
+        tiers = [{"tier": 1, "complete": True}, {"tier": 0, "complete": True}]
+        _assert_problem(self, _receipt_problems(_receipt(tiers=tiers)), "tiers must be unique and ascending")
+
+    def test_each_failed_quantity_defect_open_allowed_and_accepted_refused(self):
+        cases = [
+            ("settled false", {"settled": False}, "settled is false"),
+            (
+                "incomplete tier",
+                {"tiers": [{"tier": 0, "complete": True}, {"tier": 1, "complete": False}]},
+                "tier 1 is incomplete",
+            ),
+            ("sky 2.5", {"below_horizon_sky_percent": 2.5}, "below_horizon_sky_percent 2.5 exceeds 2"),
+            ("seam_bands 1", {"seam_bands": 1}, "seam_bands 1 is not 0"),
+            ("outer_edge true", {"outer_edge": True}, "outer_edge is true"),
+        ]
+        open_disposition = {"verdict": "defect-open", "note": "open on the native run"}
+        accepted = {"verdict": "accepted", "note": "qualified on the native run"}
+        for label, changes, needle in cases:
+            with self.subTest(quantity=label):
+                self.assertEqual(_receipt_problems(_receipt(disposition=open_disposition, **changes)), [])
+                _assert_problem(self, _receipt_problems(_receipt(disposition=accepted, **changes)), needle)
+
+    def test_unknown_receipt_disposition_key_refused(self):
+        disposition = {"verdict": "accepted", "note": "ok", "extra": 1}
+        _assert_problem(self, _receipt_problems(_receipt(disposition=disposition)), "unknown key 'extra'")
 
 
 if __name__ == "__main__":

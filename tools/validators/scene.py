@@ -39,6 +39,47 @@ ENGINE_PRESETS = frozenset(("default", "caverns", "mountains", "archipelago"))
 CAVE_DENSE = "cave_dense"
 CAVE_DENSE_FEATURES = {"cave_threshold": 0.54, "surface_break_density": 0.55, "max_feature_radius": 52}
 FEATURE_KEYS = ("cave_threshold", "surface_break_density", "max_feature_radius", "feature_cell_size")
+# Top-level preset keys: the union of the top-level keys of tests/fixtures/engine-caverns-preset.json
+# and tests/fixtures/engine-default-preset.json. Every preset must have exactly these keys.
+PRESET_KEYS = frozenset(("name", "description", "schema_rev", "generation_params"))
+# Key-set shape of cave_dense's generation_params, derived from the caverns fixture. A string
+# leaf accepts any value; _PAIRS is an array of [number, number] pairs. Other presets are not
+# held to this table (the default preset has keys caverns does not).
+_LEAF = "leaf"
+_PAIRS = "pairs"
+
+
+def _leaf_map(names):
+    return {name: _LEAF for name in names.split()}
+
+
+_TERRAIN_SHAPE = _leaf_map(
+    "base_frequency base_amplitude octaves persistence lacunarity height_offset island_mask_enabled"
+)
+_TERRAIN_SHAPE["shaping"] = dict(
+    _leaf_map(
+        "continentalness_frequency erosion_frequency peaks_frequency peaks_amplitude "
+        "domain_warp_amplitude domain_warp_frequency"
+    ),
+    continental_spline=_PAIRS,
+    erosion_spline=_PAIRS,
+    peaks_spline=_PAIRS,
+)
+_TERRAIN_SHAPE["hydro"] = _leaf_map(
+    "enabled iterations cell_size_m talus_height thermal_rate solubility deposition "
+    "sediment_capacity max_offset"
+)
+CAVE_DENSE_SHAPE = {
+    "terrain": _TERRAIN_SHAPE,
+    "biomes": _leaf_map("table temperature_frequency humidity_frequency relief_enabled"),
+    "features": _leaf_map(
+        "caves_enabled cave_frequency cave_threshold cave_carve_value spaghetti_frequency "
+        "spaghetti_thickness surface_breaks_enabled surface_break_density feature_cell_size "
+        "max_feature_radius carve_smoothness entrance_min_cap rivers_enabled river_frequency "
+        "river_depth river_pv_min river_pv_max river_max_carve lakes_enabled cliffs_enabled "
+        "structures_enabled"
+    ),
+}
 
 SCENE_DIR = "content/scenes"
 SCENE_SET_ID = "distant-world"
@@ -230,16 +271,22 @@ def _check_features(path, name, features):
     label = "generation_params.features"
     if not isinstance(features, dict):
         _fail(path, "%s must be an object" % label)
+    if name == CAVE_DENSE:
+        for key in CAVE_DENSE_FEATURES:
+            if key not in features:
+                _fail(path, "%s.%s is missing for cave_dense" % (label, key))
     for key in FEATURE_KEYS:
-        if not _is_number(features.get(key)):
+        if key in features and not _is_number(features[key]):
             _fail(path, "%s.%s must be a number" % (label, key))
-    threshold = features["cave_threshold"]
-    if not 0 < threshold < 1:
+    threshold = features.get("cave_threshold")
+    if threshold is not None and not 0 < threshold < 1:
         _fail(path, "%s.cave_threshold must be in (0, 1)" % label)
-    density = features["surface_break_density"]
-    if not 0 <= density <= 1:
+    density = features.get("surface_break_density")
+    if density is not None and not 0 <= density <= 1:
         _fail(path, "%s.surface_break_density must be in [0, 1]" % label)
-    if not features["max_feature_radius"] < features["feature_cell_size"]:
+    radius = features.get("max_feature_radius")
+    cell = features.get("feature_cell_size")
+    if radius is not None and cell is not None and not radius < cell:
         _fail(
             path,
             "%s.max_feature_radius must be less than feature_cell_size (the loader clamps otherwise)" % label,
@@ -248,6 +295,29 @@ def _check_features(path, name, features):
         for key, expected in CAVE_DENSE_FEATURES.items():
             if features[key] != expected:
                 _fail(path, "%s.%s must be %s for cave_dense" % (label, key, expected))
+
+
+def _check_shape(path, label, value, shape):
+    """Compare VALUE with SHAPE by key set; _PAIRS must be an array of two-number arrays."""
+    if shape == _PAIRS:
+        if not isinstance(value, list):
+            _fail(path, "%s must be an array of [x, y] pairs" % label)
+        for index, pair in enumerate(value):
+            if not isinstance(pair, list) or len(pair) != 2 or not all(_is_number(item) for item in pair):
+                _fail(path, "%s[%d] must be a pair of two numbers" % (label, index))
+        return
+    if not isinstance(shape, dict):
+        return
+    if not isinstance(value, dict):
+        _fail(path, "%s must be an object" % label)
+    for key in sorted(shape):
+        if key not in value:
+            _fail(path, "%s is missing key '%s'" % (label, key))
+    for key in sorted(value):
+        if key not in shape:
+            _fail(path, "%s has unknown key '%s'" % (label, key))
+    for key in sorted(shape):
+        _check_shape(path, label + "." + key, value[key], shape[key])
 
 
 def _check_preset(path, text, ctx):
@@ -264,19 +334,22 @@ def _check_preset(path, text, ctx):
     name = _stem(path, JSON_SUFFIX)
     if not _matches(_PRESET_NAME_RE, name):
         _fail(path, "file name must match [a-z0-9_-]+")
-    if not _is_int(obj.get("schema_rev")) or obj["schema_rev"] != PRESET_REV:
+    schema.check_keys(obj, PRESET_KEYS, set(), path)
+    if not _is_int(obj["schema_rev"]) or obj["schema_rev"] != PRESET_REV:
         _fail(path, "schema_rev must be 6")
     for key in ("name", "description"):
-        if not _is_text(obj.get(key)):
+        if not _is_text(obj[key]):
             _fail(path, "%s must be a non-empty string" % key)
+    params = obj["generation_params"]
+    if not isinstance(params, dict) or not params:
+        _fail(path, "generation_params must be a non-empty object")
+    if "features" in params:
+        _check_features(path, name, params["features"])
+    if name == CAVE_DENSE:
+        _check_shape(path, "generation_params", params, CAVE_DENSE_SHAPE)
     sidecar = PRESET_DIR + "/" + name + IDENTITY_SUFFIX
     if not os.path.isfile(_abs(ctx.root, sidecar)):
         _fail(path, "missing identity sidecar %s" % sidecar)
-    params = obj.get("generation_params")
-    if not isinstance(params, dict):
-        _fail(path, "generation_params must be an object")
-    if "features" in params:
-        _check_features(path, name, params["features"])
 
 
 def _check_sidecar(path, text, ctx):
