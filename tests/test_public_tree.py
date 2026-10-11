@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 TOOLS = Path(__file__).resolve().parent.parent / "tools"
 if str(TOOLS) not in sys.path:
@@ -163,10 +164,160 @@ class CleanTreeTest(_TreeTest):
 
     def test_strict_zone_clean_files_pass(self):
         self.write("content/ok.json", '{"a": 1}\n')
-        self.write("docs/evidence/ok.md", "x\n")
+        self.write("docs/evidence/ok.json", '{"schema": "luminumbra.game-pack-download-verification.v1"}\n')
         code, lines = self.run_guard()
         self.assertEqual(code, 0)
         self.assertEqual(lines, ["public tree ok (2 files)"])
+
+    def test_content_json_without_schema_key_passes(self):
+        self.write("content/presets/p.json", '{"a": 1}\n')
+        code, lines = self.run_guard()
+        self.assertEqual(code, 0)
+        self.assertEqual(lines, ["public tree ok (1 files)"])
+
+    def test_nul_in_strict_zone_refused_for_any_extension(self):
+        self.write("docs/evidence/blob.dat", b"\xff\x00\n")
+        code, lines = self.run_guard()
+        self.assertEqual(code, 1)
+        self.assertIn("docs/evidence/blob.dat: NUL byte in text file", lines)
+        self.assertTrue(any(line.startswith("docs/evidence/blob.dat: not valid UTF-8") for line in lines))
+
+    def test_invalid_utf8_in_strict_zone_refused_for_any_extension(self):
+        self.write("content/raw.bin", b"\xff\xfe\n")
+        code, lines = self.run_guard()
+        self.assertEqual(code, 1)
+        self.assertTrue(any(line.startswith("content/raw.bin: not valid UTF-8") for line in lines))
+
+    def test_duplicate_keys_in_strict_json_refused(self):
+        self.write("content/dup.json", b'{"a": 1, "a": 2}\n')
+        code, lines = self.run_guard()
+        self.assertEqual(code, 1)
+        self.assertTrue(any(line.startswith("content/dup.json: invalid JSON") and "duplicate key" in line for line in lines))
+
+    def test_exponent_tokens_in_strict_json_refused(self):
+        self.write("content/exp.json", b'{"a": 1e0}\n')
+        self.write("docs/evidence/exp.json", b'{"schema": "luminumbra.x.v1", "a": 6.0e1}\n')
+        code, lines = self.run_guard()
+        self.assertEqual(code, 1)
+        self.assertTrue(any(line.startswith("content/exp.json: invalid JSON") and "exponent" in line for line in lines))
+        self.assertTrue(any(line.startswith("docs/evidence/exp.json: invalid JSON") and "exponent" in line for line in lines))
+
+    def test_nan_in_strict_json_refused(self):
+        self.write("content/nan.json", b'{"a": NaN}\n')
+        code, lines = self.run_guard()
+        self.assertEqual(code, 1)
+        self.assertTrue(any(line.startswith("content/nan.json: invalid JSON") for line in lines))
+
+    def test_evidence_json_without_schema_refused(self):
+        self.write("docs/evidence/no-schema.json", '{"a": 1}\n')
+        code, lines = self.run_guard()
+        self.assertEqual(code, 1)
+        self.assertTrue(any(line.startswith("docs/evidence/no-schema.json: evidence JSON needs a schema") for line in lines))
+
+    def test_evidence_json_schema_must_be_a_string_matching_the_pattern(self):
+        cases = {
+            "not-string.json": '{"schema": 1}\n',
+            "wrong-stem.json": '{"schema": "other.thing.v1"}\n',
+            "no-version.json": '{"schema": "luminumbra.thing"}\n',
+            "upper.json": '{"schema": "luminumbra.Thing.v1"}\n',
+            "trailing-newline.json": '{"schema": "luminumbra.thing.v1\\n"}\n',
+        }
+        for name, text in cases.items():
+            self.write(f"docs/evidence/{name}", text)
+        code, lines = self.run_guard()
+        self.assertEqual(code, 1)
+        for name in cases:
+            self.assertTrue(
+                any(line.startswith(f"docs/evidence/{name}: evidence JSON needs a schema") for line in lines),
+                msg=name,
+            )
+
+    def test_evidence_json_must_be_an_object(self):
+        self.write("docs/evidence/list.json", "[1]\n")
+        code, lines = self.run_guard()
+        self.assertEqual(code, 1)
+        self.assertIn("docs/evidence/list.json: evidence JSON must be an object", lines)
+
+    def test_evidence_json_with_real_schema_passes(self):
+        self.write(
+            "docs/evidence/tree-small-02-download-verification.json",
+            '{"schema": "luminumbra.game-pack-download-verification.v1", "verified_on": "2026-09-07"}\n',
+        )
+        code, lines = self.run_guard()
+        self.assertEqual(code, 0)
+        self.assertEqual(lines, ["public tree ok (1 files)"])
+
+    def test_media_extensions_refused(self):
+        extensions = (
+            # images
+            ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tga", ".dds", ".exr", ".hdr",
+            ".psd", ".webp", ".ktx", ".ktx2", ".tif", ".tiff",
+            # audio
+            ".m4a", ".aac", ".wma", ".aiff", ".aif", ".mid", ".midi",
+            # video
+            ".mp4", ".mkv", ".avi", ".mov", ".webm",
+            # runtime artifacts
+            ".ltex", ".lmesh", ".lmc", ".lmr",
+        )
+        for ext in extensions:
+            self.write("media/sample" + ext, "plain text\n")
+        code, lines = self.run_guard()
+        self.assertEqual(code, 1)
+        for ext in extensions:
+            self.assertIn(f"media/sample{ext}: forbidden extension {ext}", lines)
+
+    def test_image_signatures_refused(self):
+        signatures = (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff\xe0", b"GIF87a", b"GIF89a")
+        for index, magic in enumerate(signatures):
+            self.write(f"media/img-{index}.dat", magic + b"\nbody\n")
+        code, lines = self.run_guard()
+        self.assertEqual(code, 1)
+        for index in range(len(signatures)):
+            self.assertTrue(
+                any(line.startswith(f"media/img-{index}.dat: forbidden file signature") for line in lines),
+                msg=index,
+            )
+
+    def test_inventoried_asset_passes(self):
+        self.write("assets/icon.png", b"\x89PNG\r\n\x1a\n\x00\x00")
+        with mock.patch.object(guard, "INVENTORIED_BINARY", frozenset({"assets/icon.png"})):
+            code, lines = self.run_guard()
+        self.assertEqual(code, 0)
+        self.assertEqual(lines, ["public tree ok (1 files)"])
+
+    def test_same_path_outside_assets_is_still_refused(self):
+        self.write("docs/icon.png", b"\x89PNG\r\n\x1a\n\x00\x00")
+        with mock.patch.object(guard, "INVENTORIED_BINARY", frozenset({"docs/icon.png"})):
+            code, lines = self.run_guard()
+        self.assertEqual(code, 1)
+        self.assertIn("docs/icon.png: forbidden extension .png", lines)
+        self.assertTrue(any(line.startswith("docs/icon.png: forbidden file signature") for line in lines))
+
+    def test_uninventoried_asset_is_refused(self):
+        self.write("assets/other.png", b"\x89PNG\r\n\x1a\n\x00\x00")
+        code, lines = self.run_guard()
+        self.assertEqual(code, 1)
+        self.assertIn("assets/other.png: forbidden extension .png", lines)
+
+    def test_default_inventory_is_empty(self):
+        self.assertEqual(guard.INVENTORIED_BINARY, frozenset())
+
+    def test_windows_drive_paths_refused(self):
+        self.write("docs/w0.md", "C:" + "/" + "Users" + "/Alice\n")
+        self.write("docs/w1.md", "C:" + "\\\\" + "Users" + "\\\\" + "Alice\n")
+        self.write("docs/w2.md", "c:" + "\\" + "Users" + "\\" + "Bob\n")
+        self.write("docs/w3.md", "D:" + "\\" + "Documents and Settings" + "\\" + "Eve\n")
+        self.write("docs/w4.md", "e:" + "/" + "users" + "/Mallory\n")
+        code, lines = self.run_guard()
+        self.assertEqual(code, 1)
+        for index in range(5):
+            self.assertIn(f"docs/w{index}.md: absolute local path", lines)
+
+    def test_windows_drive_text_without_user_folder_passes(self):
+        self.write("docs/ok.md", "Drive C:" + "/" + "Games and tools\n")
+        code, lines = self.run_guard()
+        self.assertEqual(code, 0)
+        self.assertEqual(lines, ["public tree ok (1 files)"])
 
     def test_line_rules_do_not_apply_outside_strict_zones(self):
         self.write("docs/notes.md", b"hi\r\nno final newline")

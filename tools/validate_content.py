@@ -30,6 +30,16 @@ from lumlib.schema import SchemaError, load_json_file  # noqa: E402
 from validators import Context, RegistryError, discover  # noqa: E402
 
 
+CONTENT_ROOT_REFUSAL = "content: symlink or non-directory is not allowed"
+
+
+def _content_root_refused(content):
+    """Return True when ROOT/content is a symlink (dangling included) or exists but is not a directory."""
+    if os.path.islink(content):
+        return True
+    return os.path.exists(content) and not os.path.isdir(content)
+
+
 def _rel(root, full):
     return os.path.relpath(full, root).replace(os.sep, "/")
 
@@ -136,8 +146,8 @@ def validate_tree(root, allow_pending, release, schemas=None, globs=None):
 
     root = os.path.abspath(root)
     content = os.path.join(root, "content")
-    if os.path.islink(content):
-        return ["content: symlink refused"]
+    if _content_root_refused(content):
+        return [CONTENT_ROOT_REFUSAL]
     if not os.path.isdir(content):
         return []
 
@@ -178,6 +188,9 @@ def main(argv=None):
     if not os.path.isdir(root):
         print(f"{args.root}: not a directory", file=sys.stderr)
         return 2
+    if _content_root_refused(os.path.join(root, "content")):
+        print(CONTENT_ROOT_REFUSAL)
+        return 1
     if not os.path.isdir(os.path.join(root, "content")):
         print("no content/ directory")
         return 0

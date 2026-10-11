@@ -38,16 +38,16 @@ jobs:
         run: |
           PY=python
           command -v python >/dev/null || PY=python3
-          "$PY" -I -m unittest discover -s tests -v
+          "$PY" -I -B -m unittest discover -s tests -v
 
       - name: Public tree guard
         run: |
           PY=python
           command -v python >/dev/null || PY=python3
-          "$PY" -I tools/validate_public_tree.py --root .
+          "$PY" -I -B tools/validate_public_tree.py --root .
 
       - name: Content validation
         run: |
           PY=python
           command -v python >/dev/null || PY=python3
-          "$PY" -I tools/validate_content.py --root . --allow-pending
+          "$PY" -I -B tools/validate_content.py --root . --allow-pending
