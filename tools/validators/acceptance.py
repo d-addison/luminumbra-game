@@ -6,10 +6,11 @@ open defects and open blocking limitations. artifact_hashes lists the hashes a
 bundle names, and verify_artifacts reads the content-addressed store
 DIR/sha256/<hex>, recomputes every hash, and checks that audio-off session
 journals contain the audio-off marker the operator supplies, that each session
-command agrees with its declared no_audio_flag, that the no-audio precedence
-command carries both --enable-audio and --no-audio, and that the null-audio
-startup command carries neither. Commands are matched as whole arguments. Every
-artifact is read once.
+command agrees with its declared no_audio_flag, that no null-audio session
+enables audio, that the no-audio precedence command carries both --enable-audio
+and --no-audio, and that the null-audio startup command carries neither. Commands
+are parsed with shlex (posix) into argv, and a flag counts only when an argument
+equals it exactly; command artifacts are capped at 64 KiB.
 
 The bundle stores hashes and counts only; the store holds the artifacts. The
 audio-off marker is not part of the bundle: a bundle cannot vouch for its own
@@ -25,6 +26,7 @@ import hashlib
 import math
 import os
 import re
+import shlex
 from decimal import Decimal
 
 from lumlib.diagnostics import CONTROL, printable
@@ -45,8 +47,10 @@ EXIT_CODE_MIN = -2147483648
 EXIT_CODE_MAX = 4294967295
 MARKER_MIN_LENGTH = 8
 CHUNK_SIZE = 65536
-NO_AUDIO_TOKEN = b"--no-audio"
-ENABLE_AUDIO_TOKEN = b"--enable-audio"
+COMMAND_CAP = 65536
+NO_AUDIO_FLAG = "--no-audio"
+ENABLE_AUDIO_FLAG = "--enable-audio"
+_NUL_AND_LINE_BREAKS = str.maketrans({"\x00": " ", "\r": " ", "\n": " "})
 PRIVATE_EXTENSIONS = (
     ".wav", ".ogg", ".flac", ".mp3", ".m4a", ".aac", ".wma",
     ".opus", ".aiff", ".aif", ".wem", ".bank", ".fsb", ".snd",
@@ -761,15 +765,6 @@ def artifact_count(doc):
     return len({digest for digest, _location in artifact_hashes(doc)})
 
 
-# A whole-argument match, as the engine's exact argv comparison sees it: the flag must
-# start the file or follow whitespace, a single quote, a double quote or NUL, and it must
-# end the file or be followed by whitespace, a quote or NUL. Any other byte next to the
-# flag (=, ., letters, digits, -, /, \\, parentheses, underscores) makes it a different
-# argument.
-_TOKEN_BEFORE = rb"(?:\A|(?<=[\s'\"\x00]))"
-_TOKEN_AFTER = rb"(?=[\s'\"\x00]|\Z)"
-
-
 def _scan_window(window, base, eof, patterns, found):
     """Record each pattern with a usable match in WINDOW, which starts at file offset BASE.
 
@@ -791,22 +786,17 @@ def _scan_window(window, base, eof, patterns, found):
             break
 
 
-def _scan_file(path, needles=(), tokens=()):
-    """Hash PATH and find NEEDLES and TOKENS in one pass over the file, in 64 KiB chunks.
+def _scan_file(path, needles=()):
+    """Hash PATH and find NEEDLES in one pass over the file, in CHUNK_SIZE chunks.
 
-    NEEDLES are byte strings that count wherever they occur. TOKENS are byte strings
-    that count only as whole tokens (see _TOKEN_BEFORE and _TOKEN_AFTER). Returns
-    (sha256 hex digest, set of the needles and tokens that were found).
+    NEEDLES are byte strings that count wherever they occur. Returns (sha256 hex digest,
+    set of the needles that were found).
 
-    Each window keeps its last reach bytes, one more than the longest pattern, so a
-    match straddling a chunk boundary is seen whole and both of its neighbouring bytes
-    are read.
+    Each window keeps its last reach bytes, one more than the longest needle, so a match
+    straddling a chunk boundary is seen whole and both of its neighbouring bytes are read.
     """
     patterns = [(needle, re.compile(re.escape(needle))) for needle in needles]
-    patterns += [
-        (token, re.compile(_TOKEN_BEFORE + re.escape(token) + _TOKEN_AFTER)) for token in tokens
-    ]
-    reach = max((len(needle) for needle, _pattern in patterns), default=0) + 1
+    reach = max((len(needle) for needle in needles), default=0) + 1
     digest = hashlib.sha256()
     found = set()
     carry = b""
@@ -834,17 +824,62 @@ def _verified(status, digest):
     return isinstance(digest, str) and status.get(digest) is True
 
 
+def _command_argv(data):
+    """Return (argv, problem) for the bytes of a command artifact; problem is None when valid.
+
+    The text is split with shlex in posix mode. NUL and CR/LF become spaces first, so a
+    line break separates arguments as it does on the command line.
+    """
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None, "command artifact is not UTF-8"
+    try:
+        argv = shlex.split(text.translate(_NUL_AND_LINE_BREAKS), posix=True)
+    except ValueError:
+        return None, "command artifact has unbalanced quotes"
+    return argv, None
+
+
+def _read_command(full, digest, location, problems):
+    """Return the argv of the command artifact at FULL, or None after recording a problem.
+
+    Only a command whose hash already verified is read again. At most COMMAND_CAP + 1 bytes
+    are read; those bytes are hashed again and must equal DIGEST, so the argv parsed is the
+    verified content and a swap between the two reads is refused.
+    """
+    with open(full, "rb") as handle:
+        data = handle.read(COMMAND_CAP + 1)
+    if len(data) > COMMAND_CAP:
+        problems.append("%s: command artifact is larger than %d bytes" % (location, COMMAND_CAP))
+        return None
+    if hashlib.sha256(data).hexdigest() != digest:
+        problems.append("%s: artifact %s mismatch" % (location, digest))
+        return None
+    argv, problem = _command_argv(data)
+    if problem is not None:
+        problems.append("%s: %s" % (location, problem))
+        return None
+    return argv
+
+
+def _argv_of(session, argv_of):
+    """Return the parsed argv of SESSION's verified command artifact, or None."""
+    digest = session.get("command_sha256") if isinstance(session, dict) else None
+    return argv_of.get(digest) if isinstance(digest, str) else None
+
+
 def verify_artifacts(doc, root, marker):
     """Return problems for the content-addressed store at ROOT (ROOT/sha256/<hex>).
 
-    Every artifact the bundle names must exist and hash to its name. Each artifact is
-    read once. Every session command is matched against the whole-argument tokens, and
-    its --no-audio token must agree with the declared no_audio_flag. For each audio-off
-    session, the journal must contain MARKER, the operator-supplied audio-off marker, as
-    UTF-8 bytes. The command of startup_checks.no_audio_precedence_session must contain
-    the --enable-audio and --no-audio tokens, and the command of
-    startup_checks.null_audio_nonzero_master_session must contain neither. Commands and
-    journals are checked only when their hash verified.
+    Every artifact the bundle names must exist and hash to its name. The streaming pass
+    hashes each artifact once and also looks for MARKER, the operator-supplied audio-off
+    marker, in each audio-off session journal as UTF-8 bytes. Each verified session command
+    is then read again, up to COMMAND_CAP bytes, and parsed into argv (see _command_argv).
+    A flag counts only when an argv element equals it exactly. An audio-off session needs
+    --no-audio; no_audio_flag must match --no-audio; a null session may not carry
+    --enable-audio; the precedence session carries both flags; the null-audio startup
+    session carries neither. Journals and commands are checked only when their hash verified.
     """
     if not os.path.isdir(root):
         return ["%s: artifact root is not a directory" % root]
@@ -859,16 +894,15 @@ def verify_artifacts(doc, root, marker):
     precedence = _named_session(startup, "no_audio_precedence_session", sessions_by_id)
     null_audio = _named_session(startup, "null_audio_nonzero_master_session", sessions_by_id)
     plain = {}
-    tokens = {}
-    for session in sessions:
+    commands = {}
+    for index, session in enumerate(sessions):
         if not isinstance(session, dict):
             continue
-        _want(tokens, session.get("command_sha256"), NO_AUDIO_TOKEN)
         if session.get("audio_mode") == "off":
             _want(plain, session.get("journal_sha256"), marker_bytes)
-    for named in (precedence, null_audio):
-        if named is not None:
-            _want(tokens, named.get("command_sha256"), ENABLE_AUDIO_TOKEN)
+        command = session.get("command_sha256")
+        if isinstance(command, str):
+            commands.setdefault(command, "sessions[%d].command_sha256" % index)
 
     problems = []
     status = {}
@@ -881,15 +915,20 @@ def verify_artifacts(doc, root, marker):
             problems.append("%s: artifact %s missing" % (location, digest))
             status[digest] = False
             continue
-        actual, seen = _scan_file(
-            full, tuple(sorted(plain.get(digest, ()))), tuple(sorted(tokens.get(digest, ())))
-        )
+        actual, seen = _scan_file(full, tuple(sorted(plain.get(digest, ()))))
         if actual != digest:
             problems.append("%s: artifact %s mismatch" % (location, digest))
             status[digest] = False
         else:
             status[digest] = True
             found[digest] = seen
+
+    argv_of = {}
+    for digest, location in commands.items():
+        if _verified(status, digest):
+            argv = _read_command(os.path.join(root, "sha256", digest), digest, location, problems)
+            if argv is not None:
+                argv_of[digest] = argv
 
     for index, session in enumerate(sessions):
         if not isinstance(session, dict):
@@ -898,43 +937,38 @@ def verify_artifacts(doc, root, marker):
         journal = session.get("journal_sha256")
         if audio_off and _verified(status, journal) and marker_bytes not in found[journal]:
             problems.append(
-                "sessions[%d].journal_sha256: audio-off journal lacks the audio-off marker"
-                % index
+                "sessions[%d].journal_sha256: audio-off journal lacks the audio-off marker" % index
             )
-        command = session.get("command_sha256")
-        if not _verified(status, command):
+        argv = _argv_of(session, argv_of)
+        if argv is None:
             continue
-        has_flag = NO_AUDIO_TOKEN in found[command]
-        if audio_off and not has_flag:
-            problems.append(
-                "sessions[%d].command_sha256: audio-off command lacks --no-audio" % index
-            )
-        elif session.get("no_audio_flag") is True and not has_flag:
-            problems.append(
-                "sessions[%d].command_sha256: command lacks --no-audio but no_audio_flag is true"
-                % index
-            )
-        elif session.get("no_audio_flag") is False and has_flag:
-            problems.append(
-                "sessions[%d].command_sha256: command contains --no-audio but no_audio_flag is false"
-                % index
-            )
-    if precedence is not None and _verified(status, precedence.get("command_sha256")):
-        command = precedence["command_sha256"]
-        if ENABLE_AUDIO_TOKEN not in found[command]:
+        here = "sessions[%d].command_sha256" % index
+        has_no_audio = NO_AUDIO_FLAG in argv
+        has_enable_audio = ENABLE_AUDIO_FLAG in argv
+        if audio_off and not has_no_audio:
+            problems.append("%s: audio-off command lacks --no-audio" % here)
+        elif session.get("no_audio_flag") is True and not has_no_audio:
+            problems.append("%s: command lacks --no-audio but no_audio_flag is true" % here)
+        elif session.get("no_audio_flag") is False and has_no_audio:
+            problems.append("%s: command contains --no-audio but no_audio_flag is false" % here)
+        if session.get("audio_mode") == "null" and has_enable_audio:
+            problems.append("%s: command enables audio but audio_mode is null" % here)
+
+    precedence_argv = _argv_of(precedence, argv_of)
+    if precedence_argv is not None:
+        if ENABLE_AUDIO_FLAG not in precedence_argv:
             problems.append(
                 "startup_checks.no_audio_precedence_session: command lacks --enable-audio"
             )
-        if NO_AUDIO_TOKEN not in found[command]:
+        if NO_AUDIO_FLAG not in precedence_argv:
             problems.append(
                 "startup_checks.no_audio_precedence_session: command lacks --no-audio"
             )
-    if null_audio is not None and _verified(status, null_audio.get("command_sha256")):
-        command = null_audio["command_sha256"]
-        if ENABLE_AUDIO_TOKEN in found[command] or NO_AUDIO_TOKEN in found[command]:
-            problems.append(
-                "startup_checks.null_audio_nonzero_master_session: command carries an audio flag"
-            )
+    null_argv = _argv_of(null_audio, argv_of)
+    if null_argv is not None and (ENABLE_AUDIO_FLAG in null_argv or NO_AUDIO_FLAG in null_argv):
+        problems.append(
+            "startup_checks.null_audio_nonzero_master_session: command carries an audio flag"
+        )
     return problems
 
 

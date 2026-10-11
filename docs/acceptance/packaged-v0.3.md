@@ -45,20 +45,24 @@ of two modes.
 - `--artifact-root DIR --audio-off-marker TEXT` also verifies the artifacts.
   Every hash the bundle names must exist under the artifact root and hash to its
   name. Each audio-off session journal must contain the marker `TEXT` as UTF-8
-  bytes, and each audio-off session command must contain the whole token
-  `--no-audio`. The command of `startup_checks.no_audio_precedence_session` must
-  contain the whole tokens `--enable-audio` and `--no-audio`. The command of
-  `startup_checks.null_audio_nonzero_master_session` must contain neither token.
-  Every session command must agree with its declared `no_audio_flag`: the
-  `--no-audio` token is required when the flag is true and refused when it is
-  false. Tokens are matched as whole arguments, as the engine's exact argument
-  comparison sees them. A token counts only when the start of the file, whitespace,
-  a single or double quote, or NUL comes before it, and the end of the file,
-  whitespace, a quote, or NUL comes after it. Any other byte next to the token
-  disqualifies it, including `=`, `.`, `/`, `\`, `:`, `;`, parentheses, letters,
-  digits and `-`, so `--no-audio=1`, `--no-audio.exe` and `x--no-audio` do not
-  count. A quoted `"--no-audio"` does count. Commands and journals are checked
-  only when their hash verified. Each artifact is read once. The marker is an operator input, not a bundle field: the bundle cannot
+  bytes. Each session command is a small text artifact, parsed as an argument
+  list: at most 65536 bytes (a larger command artifact is refused), valid UTF-8,
+  with NUL and CR/LF replaced by spaces, then split with `shlex.split` in POSIX
+  mode (unbalanced quotes are refused). A flag is present only when an argument
+  equals it exactly. So `"--no-audio"` and `'--no-audio'` count, while
+  `--no-audio=1`, `x--no-audio`, `--no-audio.exe` and the quoted fragment
+  `client "--enable-audio --no-audio"` (one argument) do not. Each audio-off
+  session command must contain `--no-audio`, and every session's command must
+  agree with its declared `no_audio_flag`: `--no-audio` is required when the flag
+  is true and refused when it is false. A session with `audio_mode` `null` must
+  not carry `--enable-audio` (refused as "command enables audio but audio_mode is
+  null"). The command of `startup_checks.no_audio_precedence_session` must contain
+  the exact arguments `--enable-audio` and `--no-audio`. The command of
+  `startup_checks.null_audio_nonzero_master_session` must contain neither. Commands
+  and journals are checked only when their hash verified. A command is read a
+  second time only after its hash verified; those bytes are hashed again and must
+  equal the digest, so the parsed argument list is the verified content. Other
+  artifacts are streamed once. The marker is an operator input, not a bundle field: the bundle cannot
   supply its own audio-off proof. `TEXT` must be at least 8 characters, not only
   whitespace, with no control characters. `--artifact-root` without
   `--audio-off-marker` is a usage error. On success it prints
@@ -133,7 +137,7 @@ evidence, the artifact expected, and the bundle key that records the result.
 | Six settled scenes, each with a defect disposition | Capture each of six scenes; record each defect as `accepted`, `fixed`, or `waived` (release refuses `open`) | Capture per scene | `scenes[]` (at least six), `settled`, `defects[].disposition` |
 | Forest submission and report agreement | Run the forest check described in the engine document; record both documents | Forest submission and report documents | `forest.agree`, `forest.submission_sha256`, `forest.report_sha256` |
 | Normal startup selects null audio regardless of saved volume | Launch the packaged client with a nonzero saved master volume and without an audio flag | Journal | `startup_checks.null_audio_nonzero_master_session` names a session with `audio_mode` `null`, `no_audio_flag` false, and `saved_master` above zero; its command must contain neither `--enable-audio` nor `--no-audio` |
-| `--no-audio` wins over a diagnostic opt-in | Launch with both `--enable-audio --no-audio` (the diagnostic opt-in and the audio-off flag). The engine document states that `--enable-audio` is an experimental diagnostic opt-in and that `--no-audio` always suppresses it | Journal containing the audio-off marker | `startup_checks.no_audio_precedence_session` names a `restart` or `load` session with `audio_mode` `off` and `no_audio_flag` true; its command must contain the whole tokens `--enable-audio` and `--no-audio` |
+| `--no-audio` wins over a diagnostic opt-in | Launch with both `--enable-audio --no-audio` (the diagnostic opt-in and the audio-off flag). The engine document states that `--enable-audio` is an experimental diagnostic opt-in and that `--no-audio` always suppresses it | Journal containing the audio-off marker | `startup_checks.no_audio_precedence_session` names a `restart` or `load` session with `audio_mode` `off` and `no_audio_flag` true; its command must contain the exact arguments `--enable-audio` and `--no-audio` |
 | Disabled settings controls preserve settings | Operator checks each disabled settings control and confirms the stored settings are unchanged | Proof record | `disabled_backend.proof_sha256`, `disabled_backend.settings_preserved` (release requires true) |
 | Preview launcher stays audio-off and its guard holds | Run the preview launcher; record its identity and the preview session | Launcher identity; preview journal with the audio-off marker | `launcher.identity_sha256`, `launcher.preview_audio_off` (release requires true); `sessions[]` kind `preview` |
 | Finite residency and distant cave/edit omissions | Not accepted for v0.3. Each gap is recorded as a `limitations[]` entry with status `open`, `blocks_release` true, and `closure_sha256` null. It stays open until the final requirement is met: an unbounded world with 16 km distant coverage, with edits and caves in distant tiers (the expanded v0.3 contract). Only then may the entry become `closed`, with `closure_sha256` set to the sha256 of its closure evidence (a 64-character lowercase hex value that differs from the package archive hash and from the other closure hash; the artifact must be in the artifact root). An open entry must have a null `closure_sha256`. | Closure evidence, once closed | `limitations[]` ids `finite-residency`, `distant-cave-edit-omitted`, with `status`, `blocks_release` and `closure_sha256`; both entries are mandatory in every bundle with `blocks_release` true; `--release` refuses either while open |
@@ -142,10 +146,11 @@ evidence, the artifact expected, and the bundle key that records the result.
 The startup and precedence rows are checked by the bundle itself. The first
 `startup_checks` session must be `null` audio with a nonzero saved master and no
 audio flag. The second must be a `restart` or `load` session with audio `off` and
-the flag set, and its command must contain the whole tokens `--enable-audio` and `--no-audio`. The `sessions[]` list must hold at least two `switch` sessions.
+the flag set, and its command must contain the exact arguments `--enable-audio` and `--no-audio`. The `sessions[]` list must hold at least two `switch` sessions.
 The command artifacts are checked only with `--artifact-root`: the first startup
-session's command must contain neither audio token, and every session's command
-must agree with its declared `no_audio_flag`.
+session's command must contain neither audio argument, every session's command
+must agree with its declared `no_audio_flag`, and a `null` session's command must
+not carry `--enable-audio`.
 
 ## Native handoff
 
