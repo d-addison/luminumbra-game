@@ -82,8 +82,8 @@ audio, Steam SDK payloads, saves, journals, captures, or reports to this
 repository. The validator refuses private file extensions (audio, archives,
 binaries, libraries, SDK and key material; the list is in
 `tools/validators/acceptance.py`, matched case-insensitively) and local or
-network path shapes (drive paths, `/home/`, `/Users/`, UNC `\\server\share`,
-`\\?\` device paths, and `//server/share`) in every string of a bundle, so a
+network path shapes (drive paths, user home directories on Linux and macOS,
+UNC server shares, extended device paths, and `//` network shares) in every string of a bundle, so a
 bundle that names such material is rejected. URLs are allowed.
 
 ## Criteria
