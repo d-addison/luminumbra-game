@@ -106,7 +106,7 @@ class PositiveTests(ReceiptTestCase):
 
     def test_sphere_at_exact_bound_is_accepted(self):
         data = copy.deepcopy(self.fixture)
-        self._entry(data, LEAF_BRANCHES_LOD0)["bounding_sphere"] = "__TOKEN__"
+        self._entry(data, LEAF_BRANCHES_LOD0)["bounding_sphere"] = ["__TOKEN__", 0, 0, 1]
         receipt = self._write_with_token("receipt-sphere-edge.json", data, "1000000000000.000000000000000000")
         code, _, err = _run(["--receipt", str(receipt), "--manifest", str(MANIFEST)])
         self.assertEqual(code, 0, err)
@@ -287,7 +287,7 @@ class NegativeTests(ReceiptTestCase):
 
     def test_sphere_rounding_trap_in_receipt_is_refused(self):
         data = copy.deepcopy(self.fixture)
-        self._entry(data, LEAF_BRANCHES_LOD0)["bounding_sphere"] = "__TOKEN__"
+        self._entry(data, LEAF_BRANCHES_LOD0)["bounding_sphere"] = ["__TOKEN__", 0, 0, 1]
         receipt = self._write_with_token("receipt-sphere-trap.json", data, "1000000000000.000000000000000001")
         code, out, err = _run(["--receipt", str(receipt), "--manifest", str(MANIFEST)])
         self.assertEqual(code, 1, err)
@@ -299,7 +299,7 @@ class NegativeTests(ReceiptTestCase):
         manifest = json.loads(MANIFEST.read_bytes().decode("utf-8"))
         for entry in manifest["files"]:
             if entry["path"] == LEAF_BRANCHES_LOD0:
-                entry["bounding_sphere"] = "__TOKEN__"
+                entry["bounding_sphere"] = ["__TOKEN__", 0, 0, 1]
         path = self._write_with_token("manifest-sphere-trap.json", manifest, "1000000000000.000000000000000001")
         code, out, err = _run(["--receipt", str(FIXTURE), "--manifest", str(path)])
         self.assertEqual(code, 1, err)
@@ -309,7 +309,7 @@ class NegativeTests(ReceiptTestCase):
 
     def test_huge_plain_decimal_sphere_in_receipt_is_refused(self):
         data = copy.deepcopy(self.fixture)
-        self._entry(data, LEAF_BRANCHES_LOD0)["bounding_sphere"] = "__TOKEN__"
+        self._entry(data, LEAF_BRANCHES_LOD0)["bounding_sphere"] = ["__TOKEN__", 0, 0, 1]
         receipt = self._write_with_token("receipt-sphere-huge.json", data, "1" + "0" * 1000000 + ".0")
         code, out, err = _run(["--receipt", str(receipt), "--manifest", str(MANIFEST)])
         self.assertEqual(code, 1, err)
@@ -321,7 +321,7 @@ class NegativeTests(ReceiptTestCase):
         manifest = json.loads(MANIFEST.read_bytes().decode("utf-8"))
         for entry in manifest["files"]:
             if entry["path"] == LEAF_BRANCHES_LOD0:
-                entry["bounding_sphere"] = "__TOKEN__"
+                entry["bounding_sphere"] = ["__TOKEN__", 0, 0, 1]
         path = self._write_with_token("manifest-sphere-huge.json", manifest, "1" + "0" * 1000000 + ".0")
         code, out, err = _run(["--receipt", str(FIXTURE), "--manifest", str(path)])
         self.assertEqual(code, 1, err)
