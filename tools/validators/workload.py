@@ -263,8 +263,46 @@ def _traversal_of(obj) -> traversal.Traversal:
     )
 
 
-def check_workload(obj, stem: str, where: str, allow_pending: bool, release: bool) -> None:
-    """Raise SchemaError or WorkloadError for the first rule a workload source breaks."""
+def _check_release_receipt(rel: str, workload_id: str, root) -> None:
+    """Refuse a release-mode receipt that is not a bound, valid file under content/receipts/.
+
+    The receipt must be a direct child of content/receipts/, must resolve (following
+    symlinks) to a file inside that directory, must parse strictly, must name this
+    workload, and must pass the receipt validator in release mode.
+    """
+    if root is None:
+        raise WorkloadError("native.receipt cannot be resolved without a content root")
+    shown = "native.receipt '%s'" % rel
+    if posixpath.dirname(rel) != RECEIPT_DIR.rstrip("/"):
+        raise WorkloadError("%s must name a file directly under content/receipts/" % shown)
+    receipts_abs = os.path.realpath(os.path.join(root, *RECEIPT_DIR.rstrip("/").split("/")))
+    full = os.path.join(root, *rel.split("/"))
+    real = os.path.realpath(full)
+    if not real.startswith(receipts_abs + os.sep):
+        raise WorkloadError("%s resolves outside content/receipts/" % shown)
+    if not os.path.isfile(real):
+        raise WorkloadError("%s does not exist" % shown)
+    try:
+        receipt = _read_json(real, rel)
+    except WorkloadError as exc:
+        raise WorkloadError("%s %s" % (shown, exc)) from None
+    try:
+        schema.check_schema_id(receipt, RECEIPT_SCHEMA, rel)
+    except SchemaError as exc:
+        raise WorkloadError("%s fails release validation: %s" % (shown, exc)) from None
+    if receipt.get("workload") != workload_id:
+        raise WorkloadError("%s names workload '%s'" % (shown, receipt.get("workload")))
+    try:
+        _check_receipt(rel, receipt, root, True)
+    except (SchemaError, WorkloadError) as exc:
+        raise WorkloadError("%s fails release validation: %s" % (shown, exc)) from None
+
+
+def check_workload(obj, stem: str, where: str, allow_pending: bool, release: bool, root=None) -> None:
+    """Raise SchemaError or WorkloadError for the first rule a workload source breaks.
+
+    ROOT is the content root; release mode needs it to resolve native.receipt.
+    """
     schema.check_schema_id(obj, WORKLOAD_SCHEMA, where)
     schema.check_keys(obj, WORKLOAD_KEYS, set(), where)
 
@@ -300,6 +338,8 @@ def check_workload(obj, stem: str, where: str, allow_pending: bool, release: boo
     _check_points(obj["points"], status)
     _check_events(obj["events"], expected_ticks, status, release, where)
     _check_native(obj["native"], where, release)
+    if release and obj["native"]["receipt"] is not None:
+        _check_release_receipt(obj["native"]["receipt"], obj["id"], root)
 
     if status == STATUS_PINNED:
         try:
@@ -308,10 +348,10 @@ def check_workload(obj, stem: str, where: str, allow_pending: bool, release: boo
             raise WorkloadError(str(exc)) from None
 
 
-def workload_problems(obj, stem: str, where: str, allow_pending: bool, release: bool) -> list:
+def workload_problems(obj, stem: str, where: str, allow_pending: bool, release: bool, root=None) -> list:
     """Return the problem lines for a workload source (an empty list when valid)."""
     try:
-        check_workload(obj, stem, where, allow_pending, release)
+        check_workload(obj, stem, where, allow_pending, release, root)
     except SchemaError as exc:
         return [str(exc)]
     except WorkloadError as exc:
@@ -386,7 +426,7 @@ def tree_problems(root: str, allow_pending: bool, release: bool = False) -> list
         except WorkloadError as exc:
             problems.append("%s: %s" % (rel, exc))
             continue
-        problems.extend(workload_problems(obj, stem, rel, allow_pending, release))
+        problems.extend(workload_problems(obj, stem, rel, allow_pending, release, root))
         if isinstance(obj, dict) and obj.get("status") == STATUS_PINNED and not obj.get("events"):
             trav_rel = TRAVERSAL_DIR + "/" + stem + TRAVERSAL_SUFFIX
             if not os.path.isfile(os.path.join(root, *trav_rel.split("/"))):
@@ -475,7 +515,7 @@ def check_workload_source(path, obj, ctx):
     if posixpath.dirname(path) != WORKLOAD_DIR:
         return ["%s: workload sources must live in %s/" % (path, WORKLOAD_DIR)]
     stem = posixpath.basename(path)[: -len(JSON_SUFFIX)]
-    return workload_problems(obj, stem, path, ctx.allow_pending, ctx.release)
+    return workload_problems(obj, stem, path, ctx.allow_pending, ctx.release, ctx.root)
 
 
 def check_traversal_file(path, text, ctx):

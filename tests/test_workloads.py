@@ -3,6 +3,7 @@ import copy
 import hashlib
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -122,12 +123,13 @@ def _receipt(traversal_sha=None):
 
 
 def _good_tree(receipt=None):
-    files = {
-        _WORKLOAD_PATH: _json_bytes(_surface_flight()),
-        _TRAVERSAL_PATH: _FIXTURE_BYTES,
-    }
+    """Return the files of a valid tree; a receipt binds the workload to _RECEIPT_PATH."""
+    obj = _surface_flight()
+    files = {_TRAVERSAL_PATH: _FIXTURE_BYTES}
     if receipt is not None:
+        obj["native"]["receipt"] = _RECEIPT_PATH
         files[_RECEIPT_PATH] = _json_bytes(receipt)
+    files[_WORKLOAD_PATH] = _json_bytes(obj)
     return files
 
 
@@ -308,11 +310,54 @@ class WorkloadSourceTests(unittest.TestCase):
         self.assertProblem(_problems(_surface_flight(), release=True), "native.receipt must be set in release mode")
 
     def test_release_with_receipt_file_is_clean(self):
-        obj = _surface_flight()
-        obj["native"]["receipt"] = _RECEIPT_PATH
+        self.assertEqual(_tree_problems(_good_tree(_receipt()), release=True), [])
+
+    def test_release_receipt_missing_file_is_refused(self):
         files = _good_tree(_receipt())
-        files[_WORKLOAD_PATH] = _json_bytes(obj)
-        self.assertEqual(_tree_problems(files, release=True), [])
+        del files[_RECEIPT_PATH]
+        problems = _tree_problems(files, release=True)
+        expected = "%s: native.receipt '%s' does not exist" % (_WORKLOAD_PATH, _RECEIPT_PATH)
+        self.assertIn(expected, problems)
+
+    def test_release_receipt_naming_other_workload_is_refused(self):
+        receipt = _receipt()
+        receipt["workload"] = "other"
+        problems = _tree_problems(_good_tree(receipt), release=True)
+        expected = "%s: native.receipt '%s' names workload 'other'" % (_WORKLOAD_PATH, _RECEIPT_PATH)
+        self.assertIn(expected, problems)
+
+    def test_release_receipt_with_fail_verdict_is_refused(self):
+        receipt = _receipt()
+        receipt["verdict"] = "fail"
+        problems = _tree_problems(_good_tree(receipt), release=True)
+        expected = (
+            "%s: native.receipt '%s' fails release validation: verdict must be pass in release mode"
+            % (_WORKLOAD_PATH, _RECEIPT_PATH)
+        )
+        self.assertIn(expected, problems)
+        self.assertEqual(_tree_problems(_good_tree(receipt)), [])
+
+    def test_release_receipt_symlink_outside_root_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp, "root")
+            outside = Path(tmp, "outside.json")
+            outside.write_bytes(_json_bytes(_receipt()))
+            files = _good_tree(_receipt())
+            del files[_RECEIPT_PATH]
+            _write_tree(str(root), files)
+            link = Path(root, *_RECEIPT_PATH.split("/"))
+            link.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.symlink(str(outside), str(link))
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks are not available on this platform")
+            problems = validate_content.validate_tree(str(root), allow_pending=False, release=True)
+        expected = "%s: native.receipt '%s' resolves outside content/receipts/" % (_WORKLOAD_PATH, _RECEIPT_PATH)
+        self.assertIn(expected, problems)
+
+    def test_committed_surface_flight_is_clean_without_release(self):
+        problems = workload.tree_problems(str(_REPO), allow_pending=False, release=False)
+        self.assertEqual([p for p in problems if "surface-flight" in p], [])
 
     def test_receipt_path_with_drive_colon_is_refused(self):
         obj = _surface_flight()

@@ -71,7 +71,11 @@ emitter refuses them.
 - `native.commands` is `docs/performance-workloads.md`. `native.receipt` is null
   or a `.json` path under `content/receipts/`. No component of that path may
   contain `:`, so Windows drive syntax is refused. In release mode the receipt
-  must be set (`native.receipt must be set in release mode`).
+  must be set (`native.receipt must be set in release mode`), must resolve
+  (following symlinks) to an existing file directly under `content/receipts/`,
+  must parse strictly, must have schema `luminumbra.game.traversal-receipt.v1`
+  and name this workload, and must pass the receipt validator in release mode.
+  A link that resolves outside `content/receipts/` is refused.
 
 A pinned workload is also validated with the strict v1 traversal rules:
 
@@ -89,7 +93,8 @@ A pinned workload is also validated with the strict v1 traversal rules:
   with `--allow-pending`.
 - The release gate (`tools/validate_content.py --release`) refuses any workload
   that is not `pinned`, any workload with null pins, any workload whose
-  `native.receipt` is null, and any event with null coordinates.
+  `native.receipt` is null or does not resolve to a bound, release-valid
+  receipt, and any event with null coordinates.
 - `emit` refuses pending workloads and workloads with events.
 - A pinned workload with events is valid as a source. It has no emitted
   traversal until the engine traversal v2 grammar exists.
