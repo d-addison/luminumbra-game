@@ -2,6 +2,7 @@
 
 import contextlib
 import copy
+import hashlib
 import io
 import json
 import sys
@@ -34,19 +35,31 @@ def _run(argv):
     return code, out.getvalue(), err.getvalue()
 
 
+def _json_text(data):
+    return json.dumps(data, indent=2) + "\n"
+
+
+def _write_text_bytes(path, text):
+    path.write_bytes(text.encode("utf-8"))
+    return path
+
+
 class ReceiptTestCase(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.dir = Path(self._tmp.name)
-        self.fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        self.fixture = json.loads(FIXTURE.read_bytes().decode("utf-8"))
 
     def _receipt_with(self, mutate, name="receipt.json"):
         data = copy.deepcopy(self.fixture)
         mutate(data)
-        path = self.dir / name
-        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        return path
+        return _write_text_bytes(self.dir / name, _json_text(data))
+
+    def _manifest_with(self, mutate, name="manifest.json"):
+        manifest = json.loads(MANIFEST.read_bytes().decode("utf-8"))
+        mutate(manifest)
+        return _write_text_bytes(self.dir / name, _json_text(manifest))
 
     def _entry(self, data, path):
         for entry in data["files"]:
@@ -61,6 +74,18 @@ class ReceiptTestCase(unittest.TestCase):
         self.assertIn(needle, err)
         self.assertEqual(out, "")
 
+    def _untrimmed_data(self):
+        """A full-format receipt: the fixture without 'trimmed' plus the other required root keys."""
+        data = copy.deepcopy(self.fixture)
+        data.pop("trimmed")
+        data["license"] = "LICENSE.txt"
+        data["processor"] = {"path": "asset_processor", "sha256": "0" * 64}
+        data["source_manifest"] = "source-manifest.json"
+        data["converter_script"] = {"path": "tools/convert_tree_small_02.py", "sha256": "0" * 64, "size": 1}
+        data["command_roots"] = ["repo"]
+        data["commands"] = []
+        return data
+
 
 class PositiveTests(ReceiptTestCase):
     def test_fixture_passes(self):
@@ -68,7 +93,7 @@ class PositiveTests(ReceiptTestCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(err, "")
 
-    def test_full_mode_skips_trimmed_fixture(self):
+    def test_full_flag_is_accepted_as_alias(self):
         code, _, err = _run(["--receipt", str(FIXTURE), "--manifest", str(MANIFEST), "--full"])
         self.assertEqual(code, 0, err)
 
@@ -100,24 +125,25 @@ class PositiveTests(ReceiptTestCase):
         code, _, err = _run(["--receipt", str(FIXTURE), "--manifest", str(MANIFEST), "--check-doc", str(DOC)])
         self.assertEqual(code, 0, err)
 
-    def test_emit_doc_table_matches_doc_block(self):
-        code, out, err = _run(["--receipt", str(FIXTURE), "--manifest", str(MANIFEST), "--emit-doc-table"])
-        self.assertEqual(code, 0, err)
-        lines = out.split("\n")
+    def test_doc_table_has_header_and_nine_mesh_rows(self):
+        accounting = checker.build_accounting(self.fixture, FIXTURE.read_bytes())
+        lines = checker.render_doc_table(accounting).split("\n")
         self.assertEqual(lines[0], "| Part | LOD | Vertices | Triangles | File bytes |")
         self.assertEqual(len([line for line in lines if line.startswith("| ")]), 11)
 
-    def test_full_mode_requires_receipt_bytes_in_manifest(self):
-        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-        receipt = self._receipt_with(lambda data: data.pop("trimmed"))
-        for entry in manifest["files"]:
-            if entry["path"] == "conversion-receipt.json":
-                entry["sha256"] = "0" * 64
-        altered = self.dir / "manifest.json"
-        altered.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-        code, _, err = _run(["--receipt", str(receipt), "--manifest", str(altered), "--full"])
-        self.assertEqual(code, 1)
-        self.assertIn("receipt sha256 does not match manifest entry", err)
+    def test_untrimmed_receipt_matching_manifest_passes(self):
+        receipt = _write_text_bytes(self.dir / "receipt-full.json", _json_text(self._untrimmed_data()))
+        body = receipt.read_bytes()
+
+        def mutate(manifest):
+            for entry in manifest["files"]:
+                if entry["path"] == "conversion-receipt.json":
+                    entry["size"] = len(body)
+                    entry["sha256"] = hashlib.sha256(body).hexdigest()
+
+        manifest = self._manifest_with(mutate)
+        code, _, err = _run(["--receipt", str(receipt), "--manifest", str(manifest)])
+        self.assertEqual(code, 0, err)
 
 
 class NegativeTests(ReceiptTestCase):
@@ -130,12 +156,18 @@ class NegativeTests(ReceiptTestCase):
     def test_seventeen_files(self):
         self._expect_failure(lambda d: d["files"].pop(), "files has 17 entries, expected 18")
 
+    def test_unknown_root_key(self):
+        self._expect_failure(lambda d: d.update(extra=1), "unknown key 'extra'")
+
+    def test_unknown_result_key(self):
+        self._expect_failure(lambda d: d["leaf_fitter"]["result"].update(extra=1), "unknown key 'extra'")
+
+    def test_unknown_file_key(self):
+        self._expect_failure(lambda d: self._entry(d, LEAF_BRANCHES_LOD0).update(extra=1), "unknown key 'extra'")
+
     def test_missing_path_in_manifest(self):
-        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-        manifest["files"] = [e for e in manifest["files"] if e["path"] != LEAF_LOD1]
-        altered = self.dir / "manifest.json"
-        altered.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-        code, _, err = _run(["--receipt", str(FIXTURE), "--manifest", str(altered)])
+        manifest = self._manifest_with(lambda m: m.update(files=[e for e in m["files"] if e["path"] != LEAF_LOD1]))
+        code, _, err = _run(["--receipt", str(FIXTURE), "--manifest", str(manifest)])
         self.assertEqual(code, 1)
         self.assertIn("%s: not in manifest" % LEAF_LOD1, err)
 
@@ -157,6 +189,14 @@ class NegativeTests(ReceiptTestCase):
 
         self._expect_failure(mutate, "28 + 32*")
 
+    def test_compensating_change_fails_manifest_vertices(self):
+        def mutate(data):
+            entry = self._entry(data, LEAF_BRANCHES_LOD0)
+            entry["vertices"] = 31954
+            entry["triangles"] = 45992
+
+        self._expect_failure(mutate, "vertices 31954 does not match manifest 31951")
+
     def test_leaf_triangles_60499(self):
         def mutate(data):
             self._entry(data, LEAF_LOD1)["triangles"] = 60499
@@ -168,6 +208,18 @@ class NegativeTests(ReceiptTestCase):
             data["leaf_fitter"]["result"]["leaf_surfaces"] = 30249
 
         self._expect_failure(mutate, "leaf_surfaces 30249, expected 30250")
+
+    def test_leaf_surfaces_float_is_not_an_integer(self):
+        def mutate(data):
+            data["leaf_fitter"]["result"]["leaf_surfaces"] = 30250.0
+
+        self._expect_failure(mutate, "leaf_fitter.result.leaf_surfaces must be an integer")
+
+    def test_leaf_triangles_boolean_is_not_an_integer(self):
+        def mutate(data):
+            data["leaf_fitter"]["result"]["triangles"] = True
+
+        self._expect_failure(mutate, "leaf_fitter.result.triangles must be an integer")
 
     def test_residual_above_bound(self):
         def mutate(data):
@@ -187,23 +239,15 @@ class NegativeTests(ReceiptTestCase):
 
         self._expect_failure(mutate, "%s: size 1398116, expected 1398117" % TEXTURE)
 
-    def test_measured_entry_without_evidence(self):
-        def mutate(data):
-            data["measured"] = [{"metric": "vram", "value": 1}]
-
-        self._expect_failure(mutate, "missing key 'evidence_sha256'")
-
     def test_check_doc_rejects_stale_block(self):
-        stale = self.dir / "doc.md"
         text = DOC.read_text(encoding="utf-8").replace("| trunk | 2 | 884 | 998 | 40292 |", "| trunk | 2 | 885 | 998 | 40292 |")
-        stale.write_text(text, encoding="utf-8")
+        stale = _write_text_bytes(self.dir / "doc.md", text)
         code, _, err = _run(["--receipt", str(FIXTURE), "--manifest", str(MANIFEST), "--check-doc", str(stale)])
         self.assertEqual(code, 1)
         self.assertIn("does not match the generated table", err)
 
     def test_check_doc_requires_markers(self):
-        bare = self.dir / "bare.md"
-        bare.write_text("no markers here\n", encoding="utf-8")
+        bare = _write_text_bytes(self.dir / "bare.md", "no markers here\n")
         code, _, err = _run(["--receipt", str(FIXTURE), "--manifest", str(MANIFEST), "--check-doc", str(bare)])
         self.assertEqual(code, 1)
         self.assertIn("expected exactly one", err)
@@ -217,10 +261,25 @@ class NegativeTests(ReceiptTestCase):
         code, _, _ = _run(["--manifest", str(MANIFEST)])
         self.assertEqual(code, 2)
 
+    def test_untrimmed_receipt_with_different_bytes_fails(self):
+        receipt = _write_text_bytes(self.dir / "receipt-full.json", _json_text(self._untrimmed_data()))
+        code, out, err = _run(["--receipt", str(receipt), "--manifest", str(MANIFEST)])
+        self.assertEqual(code, 1, err)
+        self.assertIn("receipt sha256 does not match manifest entry", err)
+        self.assertEqual(out, "")
 
-class AccountingValidatorTests(unittest.TestCase):
+    def test_untrimmed_receipt_missing_full_key_fails(self):
+        data = self._untrimmed_data()
+        data.pop("commands")
+        receipt = _write_text_bytes(self.dir / "receipt-partial.json", _json_text(data))
+        code, _, err = _run(["--receipt", str(receipt), "--manifest", str(MANIFEST)])
+        self.assertEqual(code, 1)
+        self.assertIn("missing key 'commands'", err)
+
+
+class AccountingValidatorTests(ReceiptTestCase):
     def _accounting(self):
-        receipt = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        receipt = json.loads(FIXTURE.read_bytes().decode("utf-8"))
         return checker.build_accounting(receipt, FIXTURE.read_bytes())
 
     def test_built_accounting_is_valid(self):
@@ -232,6 +291,12 @@ class AccountingValidatorTests(unittest.TestCase):
         problems = resource_accounting.validate("acc.json", obj)
         self.assertTrue(any("missing key 'evidence_sha256'" in p for p in problems), problems)
 
+    def test_measured_value_must_be_integer(self):
+        obj = self._accounting()
+        obj["measured"] = [{"evidence_sha256": "0" * 64, "value": True}]
+        problems = resource_accounting.validate("acc.json", obj)
+        self.assertTrue(any("value must be an integer" in p for p in problems), problems)
+
     def test_totals_must_match_lists(self):
         obj = self._accounting()
         obj["totals"]["texture_file_bytes"] += 1
@@ -242,6 +307,42 @@ class AccountingValidatorTests(unittest.TestCase):
         obj = self._accounting()
         obj["schema"] = "luminumbra.game.other.v1"
         self.assertEqual(len(resource_accounting.validate("acc.json", obj)), 1)
+
+    def test_part_of_unhashable_type_is_a_problem(self):
+        for bad in ([], {}):
+            with self.subTest(part=bad):
+                obj = self._accounting()
+                obj["meshes"][0]["part"] = bad
+                problems = resource_accounting.validate("acc.json", obj)
+                self.assertTrue(any("unknown part" in p for p in problems), problems)
+
+    def test_duplicate_path_with_adjusted_totals(self):
+        obj = self._accounting()
+        duplicate = copy.deepcopy(obj["meshes"][0])
+        obj["meshes"].append(duplicate)
+        obj["totals"]["mesh_file_bytes"] += duplicate["file_bytes"]
+        obj["totals"]["mesh_triangles_by_lod"]["lod%d" % duplicate["lod"]] += duplicate["triangles"]
+        problems = resource_accounting.validate("acc.json", obj)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("duplicate path %s" % duplicate["path"], problems[0])
+
+    def test_path_with_backslash_or_leading_slash_rejected(self):
+        for bad in ("data\\models\\x.lmesh", "/data/models/x.lmesh", ""):
+            with self.subTest(path=bad):
+                obj = self._accounting()
+                obj["textures"][0]["path"] = bad
+                problems = resource_accounting.validate("acc.json", obj)
+                self.assertTrue(any("path" in p for p in problems), problems)
+
+    def test_malformed_check_json_is_a_controlled_failure(self):
+        for bad in ([], {}):
+            with self.subTest(part=bad):
+                obj = self._accounting()
+                obj["meshes"][0]["part"] = bad
+                target = _write_text_bytes(self.dir / "acc.json", _json_text(obj))
+                code, _, err = _run(["--receipt", str(FIXTURE), "--manifest", str(MANIFEST), "--check-json", str(target)])
+                self.assertEqual(code, 1)
+                self.assertIn("unknown part", err)
 
 
 if __name__ == "__main__":

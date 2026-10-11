@@ -36,8 +36,8 @@ build, is in `assets/tree-small-02/CONVERSION.md`.
   as a UV-aligned textured card. No leaves are removed.
 - Every mesh LOD keeps the same 60,500 leaf triangles, with 121,000 vertices per
   leaf LOD file.
-- The largest point-fit residual is 15.414% of an individual leaf's bounding-box
-  diagonal. The fitter refuses any residual above 20%.
+- The largest residual, the maximum relative fit error, is 15.414% of an individual
+  leaf's bounding-box diagonal. The fitter refuses any residual above 20%.
 - LOD policy: LOD 1 and LOD 2 of the leaves copy the LOD 0 cards. Branch and trunk
   LODs are separately simplified meshes.
 
@@ -48,6 +48,45 @@ build, is in `assets/tree-small-02/CONVERSION.md`.
 - Lower-canopy simplification candidates are mentioned only as a historical
   assertion in the text of issue #3. No candidate mesh, log or other artifact
   was retained in this repository or in the pack, so they cannot be re-checked.
+
+## Materials
+
+The material rules are specified in
+[`assets/tree-small-02/CONVERSION.md`](../assets/tree-small-02/CONVERSION.md),
+which this page links rather than repeats.
+
+- Material maps: 512-square textures with ten mips for each of branch, leaves and
+  trunk. Albedo is sRGB; normal maps are linear OpenGL; ambient-occlusion,
+  roughness and metallic maps are linear.
+- Leaf opacity comes from the source alpha PNG and uses a 0.5 cutout threshold.
+- Mip rules: color mips filter in linear light, normal mips are renormalized, and
+  opacity mips preserve texture-space cutout coverage.
+
+## Conversion outputs
+
+The 18 conversion outputs listed in `conversion-receipt.json`, with the size and
+sha256 of each file. These rows are outside the generated accounting block.
+
+| Output | Bytes | sha256 |
+| --- | ---: | --- |
+| `data/models/trees/tree_small_02_branches.lmesh` | 1574460 | `a75313ee29bcaebb55d2c2f41f2cffc4c40d168eb14bc2f58003b5b34ed17534` |
+| `data/models/trees/tree_small_02_branches.lod1.lmesh` | 994764 | `2f3708b7420fa7b92bf6ad701cedd31642abe235bbb8dfda701fbc71b87e2bf8` |
+| `data/models/trees/tree_small_02_branches.lod2.lmesh` | 548060 | `1d9d7c400e95c70c86cc4b1738416d589da49cfc22faf937226b34e534599f34` |
+| `data/models/trees/tree_small_02_leaves.lmesh` | 4598028 | `3581c046b685027e4cdf1125cba35bccbcdb3e6d9caf96bf5b64c51024a5aa4e` |
+| `data/models/trees/tree_small_02_leaves.lod1.lmesh` | 4598028 | `3581c046b685027e4cdf1125cba35bccbcdb3e6d9caf96bf5b64c51024a5aa4e` |
+| `data/models/trees/tree_small_02_leaves.lod2.lmesh` | 4598028 | `3581c046b685027e4cdf1125cba35bccbcdb3e6d9caf96bf5b64c51024a5aa4e` |
+| `data/models/trees/tree_small_02_trunk.lmesh` | 317612 | `de9e2226f83e00d315e1b00fac20d6312ee4d637b1a0d7aaad8877c6a4d960b9` |
+| `data/models/trees/tree_small_02_trunk.lod1.lmesh` | 92632 | `5b1a8c02ef1b464822020825d211d52c17b726d49305d1e8529d5dddd239e395` |
+| `data/models/trees/tree_small_02_trunk.lod2.lmesh` | 40292 | `dac80d04502da379689c332525e531fdda6cb0962da5c6c5605c5361f4fbe567` |
+| `data/textures/models/tree_branch_albedo_512.ltex` | 1398117 | `1193631ba5cac2d5ed589d54181bb0d451c9957d334a138b7bcab534e3c7b7f9` |
+| `data/textures/models/tree_branch_arm_512.ltex` | 1398117 | `870a76a98d215b033ba54151f498539d25740edebdcef8a13973b8acd582870d` |
+| `data/textures/models/tree_branch_normal_512.ltex` | 1398117 | `2ecfee044ef739a903e0ce4317114ac01e1ddec7dfc92c5dfd46589fe977e54f` |
+| `data/textures/models/tree_leaves_albedo_512.ltex` | 1398117 | `12af70783d2d79e1f83151ed4819cce4f5ac3980f2bce37dacb793c7ecea164d` |
+| `data/textures/models/tree_leaves_arm_512.ltex` | 1398117 | `4e99735963cdc9cb3aa9ccb31e7550ced3465c8188937495c0d8395110817e75` |
+| `data/textures/models/tree_leaves_normal_512.ltex` | 1398117 | `772127f91359c94d88b855a146a5fb816c279f03984fa8bfb3370b8b2b87fb94` |
+| `data/textures/models/tree_trunk_albedo_512.ltex` | 1398117 | `559d42d4364d4dd73dd5174688e81c736de3fe11bf9771c40fb47ceb0a676ca5` |
+| `data/textures/models/tree_trunk_arm_512.ltex` | 1398117 | `d9f3d3f4b31adaf1234e2c10fce2483f6604b4c77b22f8b52b215d278f590038` |
+| `data/textures/models/tree_trunk_normal_512.ltex` | 1398117 | `e2e0ae26a9bb3481bd9ea45c029d1f0272c6dfcf69d47485b728d492ebe0c4bb` |
 
 ## Resource accounting
 
@@ -66,6 +105,21 @@ allocation: texture-array padding, driver overhead and separate LOD buffers are
 not modelled. Measured VRAM is a native item. Engine-side estimates for
 static-model textures, impostor textures and forest resources are in the engine's
 `docs/v0.3-acceptance.md` and are not duplicated here.
+
+The engine's impostor atlas is a derived bake. The engine produces it at run time
+from the pack's meshes and textures. It is not shipped content in this pack, is
+not listed in the runtime manifest, and is not part of any figure above.
+
+Measured VRAM status: NEEDS-NATIVE-RUN. The native method is:
+
+1. Query driver memory use (NVML or NVAPI) on the qualified RTX 5070 Ti before and
+   after loading the pack.
+2. Record GL allocation accounting for the same load: `glGetTextureLevelParameter`
+   for texture levels and buffer sizes for mesh buffers.
+
+Each result is added to the accounting record as a `measured` entry carrying an
+`evidence_sha256` that identifies the captured evidence. Until that run is
+recorded, the `measured` list is empty and no GPU figure is claimed.
 
 <!-- accounting:begin -->
 | Part | LOD | Vertices | Triangles | File bytes |
@@ -104,8 +158,9 @@ python3 -I tools/check_tree_small_02_receipts.py --receipt tests/fixtures/tree-s
 python3 -I tools/check_tree_small_02_receipts.py --receipt tests/fixtures/tree-small-02-receipt-counts.json --emit-doc-table
 ```
 
-`PATH/conversion-receipt.json` is the receipt inside an extracted pack. `--full`
-also checks that the receipt bytes match the manifest entry. The fixture is a
+`PATH/conversion-receipt.json` is the receipt inside an extracted pack. An untrimmed
+receipt is always checked against its manifest entry (size and sha256); `--full`
+is accepted as a no-op alias. The fixture is a
 trimmed receipt that carries the same counts and sizes, so the committed
 accounting record and this table are checked against it.
 

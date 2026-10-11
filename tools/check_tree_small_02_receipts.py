@@ -63,6 +63,24 @@ MANIFEST_FILE_COUNT = 22
 MANIFEST_MEMBERS = ("CONVERSION.md", "LICENSE.txt", "conversion-receipt.json", "source-manifest.json")
 RECEIPT_MANIFEST_NAME = "conversion-receipt.json"
 
+ROOT_KEYS = {
+    "schema",
+    "trimmed",
+    "asset",
+    "license",
+    "engine_revision",
+    "processor",
+    "source_manifest",
+    "converter_script",
+    "leaf_fitter",
+    "command_roots",
+    "commands",
+    "files",
+}
+ROOT_TRIMMED_REQUIRED = {"schema", "trimmed", "asset", "engine_revision", "leaf_fitter", "files"}
+LEAF_FITTER_KEYS = {"size", "sha256", "source", "result", "command", "lod_policy"}
+RESULT_KEYS = {"leaf_surfaces", "triangles", "maximum_relative_fit_error"}
+
 BEGIN_MARKER = "<!-- accounting:begin -->"
 END_MARKER = "<!-- accounting:end -->"
 
@@ -152,28 +170,51 @@ def _check_mesh(path, entry, problems):
             problems.append("%s: vertices %d, expected %d" % (path, vertices, LEAF_VERTICES))
 
 
+def _check_root_keys(label, receipt, trimmed, problems):
+    required = ROOT_TRIMMED_REQUIRED if trimmed else ROOT_KEYS - {"trimmed"}
+    try:
+        schema.check_keys(receipt, required, ROOT_KEYS - required, label)
+    except SchemaError as exc:
+        problems.append(str(exc))
+
+
 def _check_leaf_fitter(label, receipt, problems):
-    leaf = receipt.get("leaf_fitter")
-    result = leaf.get("result") if isinstance(leaf, dict) else None
-    if not isinstance(result, dict):
-        problems.append("%s: leaf_fitter.result is missing" % label)
+    if "leaf_fitter" not in receipt:
         return
-    for key in ("leaf_surfaces", "triangles", "maximum_relative_fit_error"):
-        if key not in result:
-            problems.append("%s: leaf_fitter.result missing key '%s'" % (label, key))
-    if "leaf_surfaces" in result and result["leaf_surfaces"] != LEAF_SURFACES:
-        problems.append("%s: leaf_fitter.result.leaf_surfaces %s, expected %d" % (label, result["leaf_surfaces"], LEAF_SURFACES))
-    if "triangles" in result and result["triangles"] != LEAF_TRIANGLES:
-        problems.append("%s: leaf_fitter.result.triangles %s, expected %d" % (label, result["triangles"], LEAF_TRIANGLES))
-    if "maximum_relative_fit_error" in result:
-        residual = _as_decimal(result["maximum_relative_fit_error"])
-        if residual is None:
-            problems.append("%s: leaf_fitter.result.maximum_relative_fit_error must be a number" % label)
-        elif residual > RESIDUAL_BOUND:
-            problems.append(
-                "%s: leaf_fitter.result.maximum_relative_fit_error %s exceeds bound %s"
-                % (label, result["maximum_relative_fit_error"], RESIDUAL_BOUND)
-            )
+    leaf = receipt["leaf_fitter"]
+    where = "%s: leaf_fitter" % label
+    if not isinstance(leaf, dict):
+        problems.append("%s: not an object" % where)
+        return
+    try:
+        schema.check_keys(leaf, {"result"}, LEAF_FITTER_KEYS - {"result"}, where)
+    except SchemaError as exc:
+        problems.append(str(exc))
+    if "result" not in leaf:
+        return
+    result = leaf["result"]
+    if not isinstance(result, dict):
+        problems.append("%s.result: not an object" % where)
+        return
+    try:
+        schema.check_keys(result, RESULT_KEYS, set(), where + ".result")
+    except SchemaError as exc:
+        problems.append(str(exc))
+        return
+    for key, expected in (("leaf_surfaces", LEAF_SURFACES), ("triangles", LEAF_TRIANGLES)):
+        value = result[key]
+        if not _is_int(value):
+            problems.append("%s: leaf_fitter.result.%s must be an integer" % (label, key))
+        elif value != expected:
+            problems.append("%s: leaf_fitter.result.%s %d, expected %d" % (label, key, value, expected))
+    residual = _as_decimal(result["maximum_relative_fit_error"])
+    if residual is None:
+        problems.append("%s: leaf_fitter.result.maximum_relative_fit_error must be a number" % label)
+    elif residual > RESIDUAL_BOUND:
+        problems.append(
+            "%s: leaf_fitter.result.maximum_relative_fit_error %s exceeds bound %s"
+            % (label, result["maximum_relative_fit_error"], RESIDUAL_BOUND)
+        )
 
 
 def _check_manifest(manifest_label, manifest, problems):
@@ -204,8 +245,12 @@ def _check_manifest(manifest_label, manifest, problems):
     return entries
 
 
-def validate(receipt_label, receipt, receipt_bytes, manifest_label, manifest, full=False):
-    """Return every "PATH: reason" problem for a receipt checked against a manifest."""
+def validate(receipt_label, receipt, receipt_bytes, manifest_label, manifest):
+    """Return every "PATH: reason" problem for a receipt checked against a manifest.
+
+    Untrimmed receipts are always compared byte-for-byte (size and sha256) with
+    the manifest conversion-receipt.json entry. Trimmed receipts are exempt.
+    """
     problems = []
     try:
         schema.check_schema_id(receipt, RECEIPT_SCHEMA, receipt_label)
@@ -216,16 +261,12 @@ def validate(receipt_label, receipt, receipt_bytes, manifest_label, manifest, fu
     if not isinstance(trimmed, bool):
         problems.append("%s: trimmed must be a boolean" % receipt_label)
         trimmed = False
+    _check_root_keys(receipt_label, receipt, trimmed, problems)
     if receipt.get("engine_revision") != ENGINE_REVISION:
         problems.append(
             "%s: engine_revision %s does not match pinned %s"
             % (receipt_label, receipt.get("engine_revision"), ENGINE_REVISION)
         )
-    for key in ("leaf_fitter", "files"):
-        if key not in receipt:
-            problems.append("%s: missing key '%s'" % (receipt_label, key))
-    if "measured" in receipt:
-        resource_accounting.validate_measured(receipt_label, receipt["measured"], problems)
 
     files = receipt.get("files")
     if not isinstance(files, list):
@@ -276,8 +317,14 @@ def validate(receipt_label, receipt, receipt_bytes, manifest_label, manifest, fu
             problems.append("%s: size %d does not match manifest %s" % (path, row["size"], member.get("size")))
         if member.get("sha256") != row["sha256"]:
             problems.append("%s: sha256 does not match manifest" % path)
+        if path.endswith(".lmesh"):
+            for key in ("vertices", "triangles"):
+                if member.get(key) != row[key]:
+                    problems.append(
+                        "%s: %s %d does not match manifest %s" % (path, key, row[key], member.get(key))
+                    )
 
-    if full and not trimmed:
+    if not trimmed:
         member = entries.get(RECEIPT_MANIFEST_NAME)
         if member is None:
             problems.append("%s: not in manifest" % RECEIPT_MANIFEST_NAME)
@@ -385,7 +432,10 @@ def check_json(path, text):
     problems = []
     if data != text.encode("utf-8"):
         problems.append("%s: does not match the regenerated accounting JSON" % path)
-    problems.extend(resource_accounting.validate(str(path), committed))
+    try:
+        problems.extend(resource_accounting.validate(str(path), committed))
+    except Exception as exc:  # malformed input must become a controlled problem, never a traceback
+        problems.append("%s: malformed resource accounting (%s)" % (path, exc.__class__.__name__))
     return problems
 
 
@@ -418,8 +468,8 @@ def _build_parser():
     parser.add_argument(
         "--full",
         action="store_true",
-        help="also require the receipt bytes to match the manifest conversion-receipt.json entry "
-        "(skipped for trimmed receipts)",
+        help="accepted for compatibility; untrimmed receipts are always checked against the "
+        "manifest conversion-receipt.json entry",
     )
     parser.add_argument("--emit-json", metavar="PATH", help="write the resource accounting JSON to PATH")
     parser.add_argument(
@@ -463,7 +513,7 @@ def main(argv=None):
         print(str(exc), file=sys.stderr)
         return 1
 
-    problems = validate(str(receipt_path), receipt, receipt_bytes, str(manifest_path), manifest, full=args.full)
+    problems = validate(str(receipt_path), receipt, receipt_bytes, str(manifest_path), manifest)
     if problems:
         return _report(problems)
 
@@ -478,7 +528,9 @@ def main(argv=None):
         if problems:
             return _report(problems)
     if args.emit_doc_table:
-        sys.stdout.write(table)
+        sys.stdout.flush()
+        sys.stdout.buffer.write(table.encode("utf-8"))
+        sys.stdout.buffer.flush()
     if args.check_doc:
         problems = check_doc(args.check_doc, table)
         if problems:
