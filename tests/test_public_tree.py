@@ -367,6 +367,20 @@ class CleanTreeTest(_TreeTest):
         self.assertEqual(code, 1)
         self.assertIn("docs/esc2.json: absolute local path", lines)
 
+    def test_escaped_path_under_duplicate_key_refused_outside_strict_zones(self):
+        text = '{"p": "C:' + "\\u005c" + 'Users' + "\\u005c" + 'Alice", "p": "safe"}\n'
+        self.write("notes/dup.json", text)
+        code, lines = self.run_guard()
+        self.assertEqual(code, 1)
+        self.assertIn("notes/dup.json: absolute local path", lines)
+
+    def test_escaped_path_inside_deep_nesting_refused_outside_strict_zones(self):
+        text = "[" * 2000 + '"C:' + "\\u005c" + 'Users' + "\\u005c" + 'Alice"' + "]" * 2000 + "\n"
+        self.write("notes/deep.json", text)
+        code, lines = self.run_guard()
+        self.assertEqual(code, 1)
+        self.assertIn("notes/deep.json: absolute local path", lines)
+
     def test_escaped_credential_in_json_string_refused(self):
         self.write("notes/esc3.json", '{"a": "' + "\\u0067" + 'hp_' + 'A' * 24 + '"}\n')
         code, lines = self.run_guard()

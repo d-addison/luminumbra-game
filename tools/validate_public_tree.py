@@ -237,6 +237,26 @@ def _json_strings(data):
     return strings
 
 
+_JSON_ESCAPE_RE = re.compile(r'\\(?:u([0-9a-fA-F]{4})|(["\\\\/bfnrt]))')
+_JSON_SIMPLE_ESCAPES = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+
+
+def _unescape_json_text(text):
+    """Resolve JSON string escapes in raw text without parsing the document.
+
+    Unlike a decode, this keeps overwritten duplicate-key values and survives
+    nesting depths a parser refuses, so the security scan also sees them.
+    """
+
+    def replace(match):
+        if match.group(1) is not None:
+            return chr(int(match.group(1), 16))
+        char = match.group(2)
+        return _JSON_SIMPLE_ESCAPES.get(char, char)
+
+    return _JSON_ESCAPE_RE.sub(replace, text)
+
+
 def _check_file(root, rel):
     full = os.path.join(root, *rel.split("/"))
     if os.path.islink(full):
@@ -280,6 +300,7 @@ def _check_file(root, rel):
     if b"\x00" not in data:
         samples = [data.decode("utf-8", errors="replace")]
         if ext == ".json":
+            samples.append(_unescape_json_text(samples[0]))
             decoded = _json_strings(data)
             if decoded is not None:
                 samples.extend(decoded)
