@@ -142,8 +142,15 @@ complete, `below_horizon_sky_percent` is at most 2, `seam_bands` is 0, and
   the row's recorded values. Missing, duplicate and inconsistent receipts are
   refused. The `scene_identity` of a profile must be the same on both of its
   displays and must differ between `quality` and `performance` for the same row.
-  The committed JSON does not carry the identities; they are taken from the
-  receipts. Pending mode (`--allow-pending`) does not require receipts.
+  Every receipt must carry the same `game_revision` and the same
+  `engine_revision`; a release that mixes candidate revisions is refused with
+  `release requires one game_revision across all scene receipts` (or
+  `engine_revision`). The four receipts of one station (both profiles and both
+  displays) must also carry one `preset_identity` and one `content_identity`;
+  a mismatch is refused with `release requires one preset_identity for station 'ID' across its receipts`
+  (or `content_identity`). Different stations may carry different values. The
+  committed JSON does not carry the identities; they are taken from the receipts. Pending mode (`--allow-pending`) does not require
+  receipts.
 
 ## Discovery oracle (NATIVE)
 
@@ -227,6 +234,9 @@ export.
   `PATH: json nesting is too deep` and exits 1.
 - `--out` and `--check` are mutually exclusive (exit 2). An invalid preset
   refuses the export (exit 1).
+- A preset or sidecar file stem that is a Windows device name (`con`, `prn`,
+  `aux`, `nul`, `com1` to `com9`, `lpt1` to `lpt9`, in any letter case) is
+  refused, because such a file cannot be an ordinary file on Windows.
 
 Delivery to the runtime is PENDING. Copying the exported file into the engine
 tree is an engine pull request owned by the coordinator. Package inclusion is
@@ -248,7 +258,7 @@ out of scope for this page.
 | `preset_identity` | 16 lowercase hex digits; checked against the sidecar |
 | `content_identity` | 1 to 20 decimal digits |
 | `adapter` | contains the qualified renderer name `RTX 5070 Ti` |
-| `engine_revision`, `game_revision` | 40 lowercase hex digits; `game_revision` is the release-candidate SHA |
+| `engine_revision`, `game_revision` | 40 lowercase hex digits; `game_revision` is the release-candidate SHA; every receipt in a release carries the same values |
 | `disposition` | `verdict` (`accepted`, `defect-open`, `defect-fixed`, `waived-with-reason`) and a non-empty `note` |
 
 ## Native handoff

@@ -69,6 +69,8 @@ def collect_sources(root):
         stem = name[: -len(_JSON_SUFFIX)]
         if not _NAME_RE.fullmatch(stem):
             raise ExportError("%s: file name must match [a-z0-9_-]+" % rel)
+        if scene.is_reserved_stem(stem):
+            raise ExportError("%s: file name must not be a reserved Windows device name" % rel)
         pairs.append((rel, mapped_template.format(name=stem)))
     return pairs
 

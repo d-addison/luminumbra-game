@@ -312,6 +312,16 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _REVISION_RE = re.compile(r"[0-9a-f]{40}")
 _CONTENT_RE = re.compile(r"[0-9]{1,20}")
 _SCENE_IDENTITY_RE = re.compile(r"[A-Za-z0-9._:-]{1,64}")
+WINDOWS_RESERVED_STEMS = frozenset(
+    ["con", "prn", "aux", "nul"]
+    + ["com%d" % number for number in range(1, 10)]
+    + ["lpt%d" % number for number in range(1, 10)]
+)
+
+
+def is_reserved_stem(stem):
+    """True when STEM is a Windows device name (case-insensitive); such a file cannot be an ordinary file there."""
+    return stem.lower() in WINDOWS_RESERVED_STEMS
 
 
 class SceneError(ValueError):
@@ -509,6 +519,8 @@ def _check_preset(path, text, ctx):
     name = _stem(path, JSON_SUFFIX)
     if not _matches(_PRESET_NAME_RE, name):
         _fail(path, "file name must match [a-z0-9_-]+")
+    if is_reserved_stem(name):
+        _fail(path, "file name must not be a reserved Windows device name")
     schema.check_keys(obj, PRESET_KEYS, set(), path)
     if not _is_int(obj["schema_rev"]) or obj["schema_rev"] != PRESET_REV:
         _fail(path, "schema_rev must be 6")
@@ -537,7 +549,11 @@ def _check_sidecar(path, text, ctx):
     schema.check_schema_id(obj, IDENTITY_SCHEMA, path)
     schema.check_keys(obj, IDENTITY_KEYS, set(), path)
     stem = _stem(path, IDENTITY_SUFFIX)
-    if not _matches(_PRESET_NAME_RE, stem) or obj["preset"] != stem:
+    if not _matches(_PRESET_NAME_RE, stem):
+        _fail(path, "preset must equal the file stem '%s'" % stem)
+    if is_reserved_stem(stem):
+        _fail(path, "file name must not be a reserved Windows device name")
+    if obj["preset"] != stem:
         _fail(path, "preset must equal the file stem '%s'" % stem)
     sibling = PRESET_DIR + "/" + obj["preset"] + JSON_SUFFIX
     sibling_full = _abs(ctx.root, sibling)
@@ -961,11 +977,16 @@ def _load_receipts(ctx):
 def _check_native_evidence(path, obj, ctx):
     """Release: every row needs one qualified receipt per profile and display, matching the row."""
     receipts = _load_receipts(ctx)
+    for field in ("game_revision", "engine_revision"):
+        if len({receipt[field] for _, receipt in receipts.values()}) > 1:
+            _fail(path, "release requires one %s across all scene receipts" % field)
     for label in ("stations", "controls", "coverage"):
         for row in obj[label]:
             row_id = row["id"]
             qualification = row["qualification"]
             identities = {}
+            preset_values = set()
+            content_values = set()
             for profile in PROFILES:
                 values = set()
                 for display in DISPLAYS:
@@ -983,6 +1004,8 @@ def _check_native_evidence(path, obj, ctx):
                     if _tier_pairs(receipt["tiers"]) != _tier_pairs(qualification["tiers"]):
                         _fail(rel, "tiers do not match the scene set row '%s'" % row_id)
                     values.add(receipt["scene_identity"])
+                    preset_values.add(receipt["preset_identity"])
+                    content_values.add(receipt["content_identity"])
                 if len(values) != 1:
                     _fail(
                         path,
@@ -990,6 +1013,10 @@ def _check_native_evidence(path, obj, ctx):
                         % (row_id, profile),
                     )
                 identities[profile] = values.pop()
+            if len(preset_values) != 1:
+                _fail(path, "release requires one preset_identity for station '%s' across its receipts" % row_id)
+            if len(content_values) != 1:
+                _fail(path, "release requires one content_identity for station '%s' across its receipts" % row_id)
             if identities[PROFILES[0]] == identities[PROFILES[1]]:
                 _fail(path, "scene_identity must differ between profiles for station '%s'" % row_id)
 

@@ -220,6 +220,19 @@ class ExportTests(unittest.TestCase):
         self.assertIn("max_feature_radius must be less than feature_cell_size", out)
         self.assertFalse(out_dir.exists())
 
+    @unittest.skipIf(os.name == "nt", "Windows cannot hold a file named nul.json; the validator test covers the rule")
+    def test_reserved_windows_device_stem_blocks_export(self):
+        root = self._content_copy("reserved")
+        shutil.copy(root / "content" / "presets" / "cave_dense.json", root / "content" / "presets" / "nul.json")
+        out_dir = self.tmp / "reserved-out"
+        code, out, _ = _run(["--root", str(root), "--out", str(out_dir)])
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            out.splitlines(),
+            ["content/presets/nul.json: file name must not be a reserved Windows device name"],
+        )
+        self.assertFalse(out_dir.exists())
+
     def test_missing_sidecar_blocks_export(self):
         root = self._content_copy("nosidecar")
         (root / "content" / "presets" / "cave_dense.identity.json").unlink()

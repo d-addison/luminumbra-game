@@ -211,6 +211,50 @@ class SceneSetTests(unittest.TestCase):
             "release requires one scene_identity for station 'empty-tile' profile 'quality' across both displays",
         )
 
+    def test_release_refuses_mixed_game_revision(self):
+        root = _release_root(self)
+        _write_full_receipts(root)
+        name = _receipt_name("arch-8km", "quality", "3840x1600")
+        _write_receipt(root, name, _qualified_receipt("arch-8km", "quality", "3840x1600", game_revision="3" * 40))
+        _assert_problem(
+            self,
+            _release_problems(_discovered_set(), root),
+            "release requires one game_revision across all scene receipts",
+        )
+
+    def test_release_refuses_mixed_engine_revision(self):
+        root = _release_root(self)
+        _write_full_receipts(root)
+        name = _receipt_name("horizon-16km", "performance", "3440x1440")
+        _write_receipt(root, name, _qualified_receipt("horizon-16km", "performance", "3440x1440", engine_revision="4" * 40))
+        _assert_problem(
+            self,
+            _release_problems(_discovered_set(), root),
+            "release requires one engine_revision across all scene receipts",
+        )
+
+    def test_release_refuses_mixed_preset_identity_within_station(self):
+        root = _release_root(self)
+        _write_full_receipts(root)
+        name = _receipt_name("arch-8km", "performance", "3440x1440")
+        _write_receipt(root, name, _qualified_receipt("arch-8km", "performance", "3440x1440", preset_identity="0" * 16))
+        _assert_problem(
+            self,
+            _release_problems(_discovered_set(), root),
+            "release requires one preset_identity for station 'arch-8km' across its receipts",
+        )
+
+    def test_release_refuses_mixed_content_identity_within_station(self):
+        root = _release_root(self)
+        _write_full_receipts(root)
+        name = _receipt_name("horizon-16km", "quality", "3840x1600")
+        _write_receipt(root, name, _qualified_receipt("horizon-16km", "quality", "3840x1600", content_identity="1"))
+        _assert_problem(
+            self,
+            _release_problems(_discovered_set(), root),
+            "release requires one content_identity for station 'horizon-16km' across its receipts",
+        )
+
     def test_release_receipts_are_not_required_in_pending_mode(self):
         root = _release_root(self)
         self.assertEqual(scene.check_scene_set(_SET_PATH, _scene_set(), Context(root=str(root), allow_pending=True, release=False)), [])
@@ -509,6 +553,21 @@ class PresetTests(unittest.TestCase):
     def test_preset_without_sidecar_refused(self):
         problems = scene.check_preset_file("content/presets/ghost.json", self.preset_text, _ctx())
         _assert_problem(self, problems, "missing identity sidecar content/presets/ghost.identity.json")
+
+    def test_reserved_windows_device_preset_name_refused(self):
+        for name in ("con", "com1"):
+            problems = scene.check_preset_file("content/presets/%s.json" % name, self.preset_text, _ctx())
+            _assert_problem(self, problems, "file name must not be a reserved Windows device name")
+
+    def test_reserved_windows_device_sidecar_name_refused(self):
+        problems = scene.check_preset_file("content/presets/con.identity.json", self.sidecar_text, _ctx())
+        _assert_problem(self, problems, "file name must not be a reserved Windows device name")
+
+    def test_reserved_stem_helper_is_case_insensitive_and_exact(self):
+        for stem in ("con", "NUL", "Com9", "lpt1", "lpt9"):
+            self.assertTrue(scene.is_reserved_stem(stem), stem)
+        for stem in ("com0", "lpt10", "console", "cave_dense", "nul-x"):
+            self.assertFalse(scene.is_reserved_stem(stem), stem)
 
     def test_duplicate_key_refused(self):
         text = self.preset_text.replace('"schema_rev": 6', '"schema_rev": 6, "schema_rev": 6', 1)
