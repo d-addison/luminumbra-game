@@ -20,7 +20,6 @@ as PATH: reason, at most 50 lines. Control characters in a printed diagnostic
 are backslash-escaped (\\n, \\r, \\t, \\xNN) so that each problem stays on one line.
 """
 
-import argparse
 import os
 import sys
 
@@ -28,6 +27,7 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 
+from lumlib.diagnostics import SingleLineParser  # noqa: E402
 from lumlib.schema import SchemaError, load_json_file  # noqa: E402
 from validators.acceptance import (  # noqa: E402
     artifact_count,
@@ -46,7 +46,7 @@ def _say(text, stream=None):
 
 
 def _build_parser():
-    parser = argparse.ArgumentParser(
+    parser = SingleLineParser(
         prog="validate_acceptance_evidence.py",
         description="Validate an acceptance evidence bundle; hashes and counts only.",
     )

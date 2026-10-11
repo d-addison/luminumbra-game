@@ -90,7 +90,8 @@ network path shapes (drive paths, user home directories on Linux and macOS,
 UNC server shares, extended device paths, and `//` network shares) in every string of a bundle, so a
 bundle that names such material is rejected. A UNC or device path is recognised at the start of a string
 or after whitespace, a quote, a parenthesis, a bracket, a brace, a comma, a semicolon, an equals sign, or
-`<`. URLs are allowed. A save path component may not contain a control character
+`<`, or a colon (backslash forms only, so `see:\\server\share` is refused). URLs are allowed, and so is
+`see://server/share`, because a colon before `//` is not a boundary. A save path component may not contain a control character
 (U+0000 through U+001F or U+007F). Every problem the validator reports escapes control
 characters as `\n`, `\r`, `\t` or `\xNN`, so each diagnostic stays on one line.
 

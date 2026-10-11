@@ -231,6 +231,14 @@ def _run_cli(argv):
     return code, out.getvalue(), err.getvalue()
 
 
+def _assert_single_line_error(test, text):
+    error_lines = [line for line in text.splitlines() if "error:" in line]
+    test.assertEqual(len(error_lines), 1, text)
+    test.assertIn("\\n", error_lines[0])
+    test.assertIn("\\x1b", error_lines[0])
+    test.assertFalse(any(ord(ch) < 32 or ord(ch) == 127 for ch in error_lines[0]))
+
+
 class _BundleTest(unittest.TestCase):
     def bundle(self):
         return copy.deepcopy(make_bundle())
@@ -1144,6 +1152,23 @@ class PrivateMaterialTest(_BundleTest):
         doc["historical"][0]["disposition"] = r"run1\\server\share\run"
         self.assertNoProblem(doc, "local absolute path shape")
 
+    def test_colon_prefixed_backslash_unc_refused(self):
+        bad = "see:" + "\\" * 2 + "server" + "\\" + "share" + "\\" + "run"
+        doc = self.bundle()
+        doc["historical"][0]["disposition"] = bad
+        self.assertProblem(doc, "historical[0].disposition: local absolute path shape is not allowed")
+
+    def test_colon_prefixed_device_path_refused(self):
+        bad = "note:" + "\\" * 2 + "?" + "\\" + "device"
+        doc = self.bundle()
+        doc["historical"][0]["disposition"] = bad
+        self.assertProblem(doc, "historical[0].disposition: local absolute path shape is not allowed")
+
+    def test_colon_prefixed_forward_slash_unc_stays_accepted(self):
+        doc = self.bundle()
+        doc["historical"][0]["disposition"] = "see://server/share"
+        self.assertNoProblem(doc, "local absolute path shape")
+
     def test_url_with_host_and_path_is_allowed(self):
         for value in ("https://host/path", "see https://host/path"):
             with self.subTest(value=value):
@@ -1326,6 +1351,11 @@ class CliTest(unittest.TestCase):
 
     def tearDown(self):
         self._tmp.cleanup()
+
+    def test_unknown_argument_control_characters_are_escaped(self):
+        code, _out, err = _run_cli([str(self.bundle), "--bad\noption\x1bX"])
+        self.assertEqual(code, 2)
+        _assert_single_line_error(self, err)
 
     def test_release_requires_artifact_root(self):
         _write_bundle(self.bundle, make_bundle())

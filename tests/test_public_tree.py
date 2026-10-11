@@ -22,6 +22,14 @@ import validate_public_tree as guard  # noqa: E402
 LIMIT = guard.MAX_BYTES
 
 
+def _assert_single_line_error(test, text):
+    error_lines = [line for line in text.splitlines() if "error:" in line]
+    test.assertEqual(len(error_lines), 1, text)
+    test.assertIn("\\n", error_lines[0])
+    test.assertIn("\\x1b", error_lines[0])
+    test.assertFalse(any(ord(ch) < 32 or ord(ch) == 127 for ch in error_lines[0]))
+
+
 def _token():
     return "gh" + "p_" + "A" * 24 + "\n"
 
@@ -491,6 +499,26 @@ class WalkAndListTest(_TreeTest):
         with contextlib.redirect_stderr(err):
             code = guard.main(["--root", str(self.root / "does-not-exist")])
         self.assertEqual(code, 2)
+
+    def test_parse_error_with_escaped_newline_in_key_prints_one_line(self):
+        # The JSON text carries a backslash-n escape, so the decoded key holds a real newline.
+        self.write("content/dup-escape.json", b'{"a\\nb": 1, "a\\nb": 2}\n')
+        code, lines = self.run_guard()
+        self.assertEqual(code, 1)
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith("content/dup-escape.json: invalid JSON in strict zone"))
+        self.assertIn("duplicate key", lines[0])
+        self.assertIn("\\n", lines[0])
+        self.assertNotIn("\n", lines[0])
+
+
+class ArgumentDiagnosticTest(unittest.TestCase):
+    def test_unknown_argument_control_characters_are_escaped(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            code = guard.main(["--bad\noption\x1bX"])
+        self.assertEqual(code, 2)
+        _assert_single_line_error(self, err.getvalue())
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ import os
 import re
 from decimal import Decimal
 
+from lumlib.diagnostics import CONTROL, printable
 from lumlib.schema import SchemaError, check_keys, check_schema_id, is_kebab
 from validate_public_tree import ABSOLUTE_PATH_PATTERNS
 
@@ -64,15 +65,15 @@ _HEX64 = re.compile(r"[0-9a-f]{64}")
 _HEX40 = re.compile(r"[0-9a-f]{40}")
 _DRIVE_START = re.compile(r"[A-Za-z]:")
 _DRIVE_PATH = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:(?:\\|/)")
-# UNC (\\server\share), device (\\?\C:) and forward-slash UNC (//server/share) paths
-# that are not preceded by an ASCII letter, digit or colon. Any other preceding character
-# (whitespace, quote, bracket, backtick, underscore, asterisk, punctuation) is a boundary;
-# a colon is not, so the // of a URL such as https://host/path never matches.
-_UNC_PATH = re.compile(r"""(?<![A-Za-z0-9:])(?:\\\\\?\\|\\\\[^\\\s]+\\|//[^/\\\s]+/)""")
+# Backslash UNC (\\server\share) and device (\\?\C:) paths. Only an ASCII letter or digit
+# before them is refused as a word character; a colon is a boundary, so see:\\server\share
+# is caught.
+_UNC_BACKSLASH_PATH = re.compile(r"(?<![A-Za-z0-9])(?:\\\\\?\\|\\\\[^\\\s]+\\)")
+# Forward-slash UNC (//server/share). A colon before the // is not a boundary, so the //
+# of a URL such as https://host/path never matches.
+_UNC_SLASH_PATH = re.compile(r"(?<![A-Za-z0-9:])//[^/\\\s]+/")
 _REQUIRED_LIMITATIONS = ("finite-residency", "distant-cave-edit-omitted")
 _LOCAL_PATTERNS = (re.compile("/ho" "me/"), re.compile("/Us" "ers/"))
-_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
-_NAMED_ESCAPES = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
 # Any occurrence of a private extension that is not immediately followed by an ASCII
 # letter or digit is refused, whatever precedes it. Matching ignores case, so a.wavelength,
 # data.apple, notes.opusx and awav are accepted while a bare .wav, _capture.wav_ and
@@ -91,19 +92,6 @@ _WINDOWS_DEVICE_NAMES = frozenset(
     + ["LPT%d" % number for number in range(1, 10)]
 )
 _WINDOWS_FORBIDDEN_CHARS = frozenset(':*?"<>|')
-
-
-def _escape_control(match):
-    char = match.group(0)
-    return _NAMED_ESCAPES.get(char) or "\\x%02x" % ord(char)
-
-
-def printable(text):
-    """Return TEXT with control characters backslash-escaped, so one diagnostic is one line.
-
-    Shared by the validator's problem strings and the command-line diagnostics.
-    """
-    return _CONTROL.sub(_escape_control, str(text))
 
 
 def _where(path):
@@ -403,7 +391,7 @@ def _check_portable_path(problems, value, path):
         )
         return
     for part in parts:
-        if _CONTROL.search(part):
+        if CONTROL.search(part):
             problems.append("%s: component '%s' contains a control character" % (path, part))
         elif part.split(".", 1)[0].rstrip(" ").upper() in _WINDOWS_DEVICE_NAMES:
             problems.append("%s: component '%s' is a reserved Windows device name" % (path, part))
@@ -605,7 +593,8 @@ def _scan_strings(value, path, problems):
             return
         if (
             _DRIVE_PATH.search(value)
-            or _UNC_PATH.search(value)
+            or _UNC_BACKSLASH_PATH.search(value)
+            or _UNC_SLASH_PATH.search(value)
             or any(pattern.search(value) for pattern in ABSOLUTE_PATH_PATTERNS + _LOCAL_PATTERNS)
         ):
             problems.append("%s: local absolute path shape is not allowed" % _where(path))
