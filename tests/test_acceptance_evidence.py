@@ -66,19 +66,32 @@ PREVIEW = 9
 NO_AUDIO_RESTART = 10
 
 
-# Command-line flags written into the command artifacts of the audio-off sessions. The
-# precedence session (restart-no-audio) carries the diagnostic opt-in as well.
-COMMAND_FLAGS = {
-    "command-preview-launch": ("--no-audio",),
-    "command-restart-no-audio": ("--enable-audio", "--no-audio"),
+# Command-line arguments written into each session's command artifact. The no_audio_flag
+# declared for a session in make_bundle() must agree with its --no-audio argument (see
+# CommandDeclarationTest). The precedence session (restart-no-audio) carries the diagnostic
+# opt-in as well, and the null-audio startup session carries neither audio flag.
+SESSION_FLAGS = {
+    "create-world": (),
+    "edit-world": (),
+    "save-world": (),
+    "restart-world": (),
+    "load-world": (),
+    "switch-world-a": (),
+    "switch-world-b": (),
+    "refusal-bad-save": (),
+    "refusal-bad-switch": (),
+    "preview-launch": ("--no-audio",),
+    "restart-no-audio": ("--enable-audio", "--no-audio"),
 }
 
 
 def _blob(label):
     """Return the bytes stored under the content address of ``label``."""
     text = "artifact %s\n" % label
-    if label in COMMAND_FLAGS:
-        text += " ".join(COMMAND_FLAGS[label]) + "\n"
+    if label.startswith("command-"):
+        flags = SESSION_FLAGS[label[len("command-"):]]
+        if flags:
+            text += " ".join(flags) + "\n"
     if label in OFF_JOURNALS:
         text += MARKER + "\n"
     return text.encode("utf-8")
@@ -941,6 +954,28 @@ class ForestAndLimitationTest(_BundleTest):
         self.assertIn((_h("closure-distant-cave-edit-omitted"), "limitations[1].closure_sha256"),
                       artifact_hashes(doc))
 
+    def test_closure_equal_to_package_archive_refused(self):
+        doc = self.bundle()
+        doc["limitations"][0]["closure_sha256"] = doc["package"]["archive_sha256"]
+        self.assertProblem(
+            doc, "limitations[0].closure_sha256: closure evidence must differ from package.archive_sha256"
+        )
+        self.assertProblem(
+            doc, "limitations[0].closure_sha256: closure evidence must differ from package.archive_sha256",
+            release=True,
+        )
+
+    def test_closure_shared_between_limitations_refused(self):
+        doc = self.bundle()
+        doc["limitations"][1]["closure_sha256"] = doc["limitations"][0]["closure_sha256"]
+        self.assertProblem(
+            doc, "limitations[1].closure_sha256: closure evidence must differ from limitations[0].closure_sha256"
+        )
+
+    def test_distinct_closure_hashes_accepted(self):
+        doc = self.bundle()
+        self.assertNoProblem(doc, "must differ from", release=True)
+
     def test_no_historical_record_refused(self):
         doc = self.bundle()
         doc["historical"] = []
@@ -1443,17 +1478,20 @@ class ArtifactRootTest(unittest.TestCase):
 
     def test_no_audio_token_glued_to_neighbours_is_refused(self):
         for text in (b"--no-audio-x", b"--no-audiofoo", b"--no-audio1", b"--no-audio-",
-                     b"--no-audio--", b"x--no-audio", b"0--no-audio", b"ab--no-audioZ"):
+                     b"--no-audio--", b"x--no-audio", b"0--no-audio", b"ab--no-audioZ",
+                     b"--no-audio=1", b"--no-audio.exe", b"--no-audio/x", b"/--no-audio",
+                     b"\\--no-audio", b"(--no-audio)", b"_--no-audio_", b"\t--no-audio=1",
+                     b"C:\\tools\\--no-audio", b"--no-audio:1", b"--no-audio;"):
             with self.subTest(text=text):
                 self.assertEqual(
                     self._preview_command_problems(b"artifact command-preview-launch\n" + text + b"\n"),
                     ["sessions[9].command_sha256: audio-off command lacks --no-audio"],
                 )
 
-    def test_no_audio_token_next_to_space_quote_or_punctuation_is_accepted(self):
-        for text in (b"--no-audio", b"--no-audio\n", b" --no-audio", b'"--no-audio"',
-                     b"\x00--no-audio\x00", b"\t--no-audio=1", b"--enable-audio --no-audio",
-                     b"(--no-audio)", b"_--no-audio_"):
+    def test_no_audio_argument_next_to_space_newline_quote_or_nul_is_accepted(self):
+        for text in (b"--no-audio", b"--no-audio\n", b" --no-audio", b"\t--no-audio\t",
+                     b'"--no-audio"', b"'--no-audio'", b'"--no-audio" x',
+                     b"\x00--no-audio\x00", b"--enable-audio --no-audio"):
             with self.subTest(text=text):
                 self.assertEqual(
                     self._preview_command_problems(b"artifact command-preview-launch\n" + text + b"\n"),
@@ -1462,7 +1500,10 @@ class ArtifactRootTest(unittest.TestCase):
 
     def test_no_audio_token_straddling_the_chunk_boundary_is_judged_whole(self):
         refused = "sessions[9].command_sha256: audio-off command lacks --no-audio"
-        self.assertEqual(self._preview_command_problems(b"a" * 65533 + b"--no-audio\n"), [])
+        # The flag occupies offsets 65533 to 65542, so it crosses the 65536 chunk boundary.
+        self.assertEqual(self._preview_command_problems(b"a" * 65532 + b" --no-audio\n"), [])
+        self.assertEqual(self._preview_command_problems(b"a" * 65533 + b"--no-audio\n"), [refused])
+        self.assertEqual(self._preview_command_problems(b"a" * 65532 + b" --no-audio=1\n"), [refused])
         self.assertEqual(self._preview_command_problems(b"a" * 65526 + b"--no-audio" + b"x"), [refused])
         self.assertEqual(self._preview_command_problems(b"a" * 65535 + b"x--no-audio"), [refused])
 
@@ -1511,6 +1552,85 @@ class ArtifactRootTest(unittest.TestCase):
         self.assertEqual(
             verify_artifacts(doc, str(self.store), MARKER),
             ["sessions[9].command_sha256: artifact %s mismatch" % digest],
+        )
+
+
+class CommandDeclarationTest(unittest.TestCase):
+    """Each session's command must agree with its declared no_audio_flag."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.store = Path(self._tmp.name) / "store"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _command(self, index, content):
+        """Return a bundle whose session INDEX names a command artifact holding CONTENT."""
+        (self.store / "sha256").mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(content).hexdigest()
+        (self.store / "sha256" / digest).write_bytes(content)
+        doc = make_bundle()
+        doc["sessions"][index]["command_sha256"] = digest
+        return doc
+
+    def test_helper_flags_agree_with_declared_no_audio_flags(self):
+        for session in make_bundle()["sessions"]:
+            with self.subTest(session=session["id"]):
+                flags = SESSION_FLAGS[session["id"]]
+                self.assertEqual("--no-audio" in flags, session["no_audio_flag"])
+                self.assertEqual("--enable-audio" in flags, session["id"] == "restart-no-audio")
+
+    def test_helper_bundle_verifies_with_declarations_in_place(self):
+        _store(self.store)
+        self.assertEqual(verify_artifacts(make_bundle(), str(self.store), MARKER), [])
+
+    def test_false_flag_session_carrying_no_audio_refused(self):
+        _store(self.store)
+        doc = self._command(0, b"artifact command-create-world\n--no-audio\n")
+        self.assertEqual(
+            verify_artifacts(doc, str(self.store), MARKER),
+            ["sessions[0].command_sha256: command contains --no-audio but no_audio_flag is false"],
+        )
+
+    def test_true_flag_null_session_lacking_no_audio_refused(self):
+        _store(self.store)
+        doc = make_bundle()
+        doc["sessions"][1]["no_audio_flag"] = True
+        self.assertEqual(
+            verify_artifacts(doc, str(self.store), MARKER),
+            ["sessions[1].command_sha256: command lacks --no-audio but no_audio_flag is true"],
+        )
+
+    def test_enable_audio_on_an_ordinary_session_is_not_judged(self):
+        _store(self.store)
+        doc = self._command(1, b"artifact command-edit-world\n--enable-audio\n")
+        self.assertEqual(verify_artifacts(doc, str(self.store), MARKER), [])
+
+    def test_null_audio_startup_command_carrying_enable_audio_refused(self):
+        _store(self.store)
+        doc = self._command(3, b"artifact command-restart-world\n--enable-audio\n")
+        self.assertEqual(
+            verify_artifacts(doc, str(self.store), MARKER),
+            ["startup_checks.null_audio_nonzero_master_session: command carries an audio flag"],
+        )
+
+    def test_null_audio_startup_command_carrying_no_audio_reports_both(self):
+        _store(self.store)
+        doc = self._command(3, b"artifact command-restart-world\n--no-audio\n")
+        self.assertEqual(
+            verify_artifacts(doc, str(self.store), MARKER),
+            [
+                "sessions[3].command_sha256: command contains --no-audio but no_audio_flag is false",
+                "startup_checks.null_audio_nonzero_master_session: command carries an audio flag",
+            ],
+        )
+
+    def test_unverified_startup_command_is_not_judged(self):
+        _store(self.store, skip=frozenset([_h("command-restart-world")]))
+        self.assertEqual(
+            verify_artifacts(make_bundle(), str(self.store), MARKER),
+            ["sessions[3].command_sha256: artifact %s missing" % _h("command-restart-world")],
         )
 
 

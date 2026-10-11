@@ -5,9 +5,11 @@ whole-document scan for private material. With release=True it also refuses
 open defects and open blocking limitations. artifact_hashes lists the hashes a
 bundle names, and verify_artifacts reads the content-addressed store
 DIR/sha256/<hex>, recomputes every hash, and checks that audio-off session
-journals contain the audio-off marker the operator supplies, that audio-off
-commands carry the --no-audio flag, and that the no-audio precedence command
-carries both --enable-audio and --no-audio. Every artifact is read once.
+journals contain the audio-off marker the operator supplies, that each session
+command agrees with its declared no_audio_flag, that the no-audio precedence
+command carries both --enable-audio and --no-audio, and that the null-audio
+startup command carries neither. Commands are matched as whole arguments. Every
+artifact is read once.
 
 The bundle stores hashes and counts only; the store holds the artifacts. The
 audio-off marker is not part of the bundle: a bundle cannot vouch for its own
@@ -546,11 +548,18 @@ def _check_disabled_backend(problems, value, path, release):
         problems.append("%s must be true in release mode" % preserved_path)
 
 
-def _check_limitations(problems, value, path, release):
+def _check_limitations(problems, value, path, release, archive=None):
+    """Check the limitation entries. ARCHIVE is package.archive_sha256 when it is known.
+
+    Closure evidence is the retained completion record. Each closed entry's closure hash
+    must differ from the package archive hash and from every other entry's closure hash.
+    Whether the record proves completion is decided by the human review of the release.
+    """
     if not _list(problems, value, path):
         return
     seen = set()
     first_index = {}
+    closures = {}
     for index, entry in enumerate(value):
         here = "%s[%d]" % (path, index)
         if not _keys(problems, entry, here, ("blocks_release", "closure_sha256", "id", "status")):
@@ -566,8 +575,19 @@ def _check_limitations(problems, value, path, release):
         elif status == "closed":
             if closure is None:
                 problems.append("%s: closed limitation needs closure evidence" % closure_path)
-            else:
-                _hex(problems, closure, closure_path)
+            elif _hex(problems, closure, closure_path):
+                if closure == archive:
+                    problems.append(
+                        "%s: closure evidence must differ from package.archive_sha256"
+                        % closure_path
+                    )
+                elif closure in closures:
+                    problems.append(
+                        "%s: closure evidence must differ from %s"
+                        % (closure_path, closures[closure])
+                    )
+                else:
+                    closures[closure] = closure_path
         elif closure is not None:
             problems.append("%s: open limitation must have a null closure_sha256" % closure_path)
         if not isinstance(entry["blocks_release"], bool):
@@ -673,7 +693,9 @@ def validate_bundle(doc, *, release=False):
     if "disabled_backend" in doc:
         _check_disabled_backend(problems, doc["disabled_backend"], "disabled_backend", release)
     if "limitations" in doc:
-        _check_limitations(problems, doc["limitations"], "limitations", release)
+        package = doc.get("package")
+        archive = package.get("archive_sha256") if isinstance(package, dict) else None
+        _check_limitations(problems, doc["limitations"], "limitations", release, archive)
     if "historical" in doc:
         _check_historical(problems, doc["historical"], "historical")
     if "unresolved_diagnostics" in doc:
@@ -739,10 +761,13 @@ def artifact_count(doc):
     return len({digest for digest, _location in artifact_hashes(doc)})
 
 
-# A whole-token match: the flag must not be preceded or followed by an ASCII letter,
-# digit or '-'. Start and end of file count as boundaries.
-_TOKEN_BEFORE = rb"(?<![A-Za-z0-9-])"
-_TOKEN_AFTER = rb"(?![A-Za-z0-9-])"
+# A whole-argument match, as the engine's exact argv comparison sees it: the flag must
+# start the file or follow whitespace, a single quote, a double quote or NUL, and it must
+# end the file or be followed by whitespace, a quote or NUL. Any other byte next to the
+# flag (=, ., letters, digits, -, /, \\, parentheses, underscores) makes it a different
+# argument.
+_TOKEN_BEFORE = rb"(?:\A|(?<=[\s'\"\x00]))"
+_TOKEN_AFTER = rb"(?=[\s'\"\x00]|\Z)"
 
 
 def _scan_window(window, base, eof, patterns, found):
@@ -813,11 +838,13 @@ def verify_artifacts(doc, root, marker):
     """Return problems for the content-addressed store at ROOT (ROOT/sha256/<hex>).
 
     Every artifact the bundle names must exist and hash to its name. Each artifact is
-    read once. For each audio-off session, the journal must contain MARKER, the
-    operator-supplied audio-off marker, as UTF-8 bytes, and the command must contain
-    the --no-audio token. The command of startup_checks.no_audio_precedence_session
-    must contain the --enable-audio and --no-audio tokens. Commands and journals are
-    checked only when their hash verified.
+    read once. Every session command is matched against the whole-argument tokens, and
+    its --no-audio token must agree with the declared no_audio_flag. For each audio-off
+    session, the journal must contain MARKER, the operator-supplied audio-off marker, as
+    UTF-8 bytes. The command of startup_checks.no_audio_precedence_session must contain
+    the --enable-audio and --no-audio tokens, and the command of
+    startup_checks.null_audio_nonzero_master_session must contain neither. Commands and
+    journals are checked only when their hash verified.
     """
     if not os.path.isdir(root):
         return ["%s: artifact root is not a directory" % root]
@@ -827,19 +854,21 @@ def verify_artifacts(doc, root, marker):
     marker_bytes = marker.encode("utf-8")
     sessions = doc.get("sessions") if isinstance(doc.get("sessions"), list) else []
     sessions_by_id = _index_by_name(sessions, "id")
+    startup = doc.get("startup_checks")
+    startup = startup if isinstance(startup, dict) else {}
+    precedence = _named_session(startup, "no_audio_precedence_session", sessions_by_id)
+    null_audio = _named_session(startup, "null_audio_nonzero_master_session", sessions_by_id)
     plain = {}
     tokens = {}
     for session in sessions:
-        if not isinstance(session, dict) or session.get("audio_mode") != "off":
+        if not isinstance(session, dict):
             continue
-        _want(plain, session.get("journal_sha256"), marker_bytes)
         _want(tokens, session.get("command_sha256"), NO_AUDIO_TOKEN)
-    startup = doc.get("startup_checks")
-    second_id = startup.get("no_audio_precedence_session") if isinstance(startup, dict) else None
-    second = sessions_by_id.get(second_id) if isinstance(second_id, str) else None
-    if second is not None:
-        _want(tokens, second.get("command_sha256"), ENABLE_AUDIO_TOKEN)
-        _want(tokens, second.get("command_sha256"), NO_AUDIO_TOKEN)
+        if session.get("audio_mode") == "off":
+            _want(plain, session.get("journal_sha256"), marker_bytes)
+    for named in (precedence, null_audio):
+        if named is not None:
+            _want(tokens, named.get("command_sha256"), ENABLE_AUDIO_TOKEN)
 
     problems = []
     status = {}
@@ -863,21 +892,35 @@ def verify_artifacts(doc, root, marker):
             found[digest] = seen
 
     for index, session in enumerate(sessions):
-        if not isinstance(session, dict) or session.get("audio_mode") != "off":
+        if not isinstance(session, dict):
             continue
+        audio_off = session.get("audio_mode") == "off"
         journal = session.get("journal_sha256")
-        if _verified(status, journal) and marker_bytes not in found[journal]:
+        if audio_off and _verified(status, journal) and marker_bytes not in found[journal]:
             problems.append(
                 "sessions[%d].journal_sha256: audio-off journal lacks the audio-off marker"
                 % index
             )
         command = session.get("command_sha256")
-        if _verified(status, command) and NO_AUDIO_TOKEN not in found[command]:
+        if not _verified(status, command):
+            continue
+        has_flag = NO_AUDIO_TOKEN in found[command]
+        if audio_off and not has_flag:
             problems.append(
                 "sessions[%d].command_sha256: audio-off command lacks --no-audio" % index
             )
-    if second is not None and _verified(status, second.get("command_sha256")):
-        command = second["command_sha256"]
+        elif session.get("no_audio_flag") is True and not has_flag:
+            problems.append(
+                "sessions[%d].command_sha256: command lacks --no-audio but no_audio_flag is true"
+                % index
+            )
+        elif session.get("no_audio_flag") is False and has_flag:
+            problems.append(
+                "sessions[%d].command_sha256: command contains --no-audio but no_audio_flag is false"
+                % index
+            )
+    if precedence is not None and _verified(status, precedence.get("command_sha256")):
+        command = precedence["command_sha256"]
         if ENABLE_AUDIO_TOKEN not in found[command]:
             problems.append(
                 "startup_checks.no_audio_precedence_session: command lacks --enable-audio"
@@ -886,7 +929,19 @@ def verify_artifacts(doc, root, marker):
             problems.append(
                 "startup_checks.no_audio_precedence_session: command lacks --no-audio"
             )
+    if null_audio is not None and _verified(status, null_audio.get("command_sha256")):
+        command = null_audio["command_sha256"]
+        if ENABLE_AUDIO_TOKEN in found[command] or NO_AUDIO_TOKEN in found[command]:
+            problems.append(
+                "startup_checks.null_audio_nonzero_master_session: command carries an audio flag"
+            )
     return problems
+
+
+def _named_session(startup, key, sessions_by_id):
+    """Return the session that the startup check KEY names, or None."""
+    name = startup.get(key)
+    return sessions_by_id.get(name) if isinstance(name, str) else None
 
 
 def _registry_entry(path, obj, ctx):
