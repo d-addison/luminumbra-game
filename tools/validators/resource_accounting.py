@@ -17,6 +17,7 @@ SCHEMA = "luminumbra.game.resource-accounting.v1"
 # The mandated scope, as committed in docs/evidence/tree-small-02-resource-accounting.json.
 SCOPE = "tree-small-02 pack only; file and payload sizes, not GPU allocations"
 MAX_COUNT = 2**31 - 1
+LEAF_SURFACES = 30250
 
 _HEX40 = re.compile(r"[0-9a-f]{40}")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
@@ -178,6 +179,8 @@ def _validate_totals(label, totals, meshes, textures, problems):
     for key in _TOTAL_INT_KEYS:
         if not _is_count(totals[key]):
             problems.append("%s: %s must be an integer no larger than %d" % (where, key, MAX_COUNT))
+    if _is_count(totals["leaf_surfaces"]) and totals["leaf_surfaces"] != LEAF_SURFACES:
+        problems.append("%s: leaf_surfaces %r must be %d" % (where, totals["leaf_surfaces"], LEAF_SURFACES))
     mesh_file = sum(m["file_bytes"] for m in meshes)
     if _is_count(totals["mesh_file_bytes"]) and totals["mesh_file_bytes"] != mesh_file:
         problems.append("%s: mesh_file_bytes %r does not match sum %d" % (where, totals["mesh_file_bytes"], mesh_file))

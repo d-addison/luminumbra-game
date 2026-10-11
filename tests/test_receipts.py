@@ -467,6 +467,19 @@ class AccountingValidatorTests(ReceiptTestCase):
         problems = resource_accounting.validate("acc.json", obj)
         self.assertTrue(any("texture_file_bytes" in p for p in problems), problems)
 
+    def test_leaf_surfaces_total_is_pinned(self):
+        obj = self._accounting()
+        obj["totals"]["leaf_surfaces"] = 1
+        problems = resource_accounting.validate("acc.json", obj)
+        self.assertTrue(any("leaf_surfaces" in p and "must be 30250" in p for p in problems), problems)
+
+    def test_emit_json_to_missing_directory_is_a_controlled_failure(self):
+        target = self.dir / "no-such-dir" / "acc.json"
+        code, out, err = _run(["--receipt", str(FIXTURE), "--manifest", str(MANIFEST), "--emit-json", str(target)])
+        self.assertEqual(code, 1)
+        self.assertIn("cannot write", err)
+        self.assertNotIn("Traceback", err)
+
     def test_wrong_schema_rejected(self):
         obj = self._accounting()
         obj["schema"] = "luminumbra.game.other.v1"

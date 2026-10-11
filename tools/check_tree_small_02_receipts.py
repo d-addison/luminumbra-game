@@ -665,7 +665,10 @@ def main(argv=None):
     table = render_doc_table(accounting)
 
     if args.emit_json:
-        Path(args.emit_json).write_bytes(text.encode("utf-8"))
+        try:
+            Path(args.emit_json).write_bytes(text.encode("utf-8"))
+        except OSError as exc:
+            return _report(["%s: cannot write: %s" % (args.emit_json, exc.strerror or exc.__class__.__name__)])
     if args.check_json:
         problems = check_json(args.check_json, text)
         if problems:
