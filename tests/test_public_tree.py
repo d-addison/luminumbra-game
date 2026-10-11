@@ -393,6 +393,32 @@ class CleanTreeTest(_TreeTest):
         self.assertEqual(code, 0)
         self.assertEqual(lines, ["public tree ok (1 files)"])
 
+    def test_escaped_path_after_exponent_number_refused_by_lenient_scan(self):
+        # The strict preset parser rejects 1e0; the security scan still decodes the strings.
+        text = '{"n":1e0,"p":"C:' + "\\u005c" + 'Users' + "\\u005c" + 'Alice"}\n'
+        self.write("notes/x.json", text)
+        code, lines = self.run_guard()
+        self.assertEqual(code, 1)
+        self.assertEqual(lines, ["notes/x.json: absolute local path"])
+
+    def test_invalid_json_outside_strict_zone_does_not_crash(self):
+        self.write("notes/bad.json", '{"a": \n')
+        code, lines = self.run_guard()
+        self.assertEqual(code, 0)
+        self.assertEqual(lines, ["public tree ok (1 files)"])
+
+    def test_uppercase_json_extension_in_evidence_zone_is_checked(self):
+        self.write("docs/evidence/x.JSON", '{"schema": "not-a-schema"}\n')
+        code, lines = self.run_guard()
+        self.assertEqual(code, 1)
+        self.assertIn("docs/evidence/x.JSON: evidence JSON needs a schema key matching luminumbra.<name>.v<N>", lines)
+
+    def test_uppercase_json_extension_gets_escaped_path_scan(self):
+        self.write("notes/esc.Json", '{"a": "C:' + "\\u005c" + 'Users' + "\\u005c" + 'Alice"}\n')
+        code, lines = self.run_guard()
+        self.assertEqual(code, 1)
+        self.assertIn("notes/esc.Json: absolute local path", lines)
+
     def test_archive_and_binary_signatures_refused_literal_bytes(self):
         cases = {
             "zip-eocd.dat": b"PK\x05\x06" + b"\x00" * 18,

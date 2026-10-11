@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+import json
 import os
 import sys
 import tempfile
@@ -211,15 +212,112 @@ class EvidenceZoneTest(_ContentTest):
             [f"docs/evidence/x.json: schema '{future}' is not registered"],
         )
 
+    def _record(self):
+        return json.loads(REAL_EVIDENCE.read_text(encoding="utf-8"))
+
+    def _write_record(self, record, rel="docs/evidence/x.json"):
+        self.write(rel, json.dumps(record) + "\n")
+
     def test_registered_schema_with_missing_key_refused(self):
-        self.write("docs/evidence/x.json", '{"schema": "%s", "verified_on": "2026-09-07"}\n' % EVIDENCE_SCHEMA)
-        problems = self.registry_problems()
-        self.assertIn("docs/evidence/x.json: missing key 'method'", problems)
+        record = self._record()
+        del record["method"]
+        self._write_record(record)
+        self.assertEqual(self.registry_problems(), ["docs/evidence/x.json: missing key 'method'"])
 
     def test_registered_schema_with_null_key_refused(self):
-        self.write("docs/evidence/x.json", '{"schema": "%s", "method": null}\n' % EVIDENCE_SCHEMA)
-        problems = self.registry_problems()
-        self.assertIn("docs/evidence/x.json: key 'method' is null", problems)
+        record = self._record()
+        record["method"] = None
+        self._write_record(record)
+        self.assertEqual(self.registry_problems(), ["docs/evidence/x.json: key 'method' must be a string"])
+
+    def test_evidence_record_with_unknown_root_key_refused(self):
+        record = self._record()
+        record["extra"] = 1
+        self._write_record(record)
+        self.assertEqual(self.registry_problems(), ["docs/evidence/x.json: unknown key 'extra'"])
+
+    def test_evidence_source_must_be_an_object(self):
+        record = self._record()
+        record["source"] = False
+        self._write_record(record)
+        self.assertEqual(self.registry_problems(), ["docs/evidence/x.json: source: not an object"])
+
+    def test_evidence_source_with_unknown_key_refused(self):
+        record = self._record()
+        record["source"]["extra"] = "x"
+        self._write_record(record)
+        self.assertEqual(self.registry_problems(), ["docs/evidence/x.json: source: unknown key 'extra'"])
+
+    def test_evidence_source_with_missing_nested_key_refused(self):
+        record = self._record()
+        del record["source"]["tag"]
+        self._write_record(record)
+        self.assertEqual(self.registry_problems(), ["docs/evidence/x.json: source: missing key 'tag'"])
+
+    def test_evidence_bool_where_integer_expected_refused(self):
+        record = self._record()
+        record["source"]["archive_bytes"] = True
+        self._write_record(record)
+        self.assertEqual(
+            self.registry_problems(),
+            ["docs/evidence/x.json: source: key 'archive_bytes' must be an integer"],
+        )
+
+    def test_evidence_member_with_unknown_key_refused(self):
+        record = self._record()
+        record["runtime"]["members"][0]["extra"] = 1
+        self._write_record(record)
+        self.assertEqual(
+            self.registry_problems(),
+            ["docs/evidence/x.json: runtime: members[0]: unknown key 'extra'"],
+        )
+
+    def test_evidence_members_must_be_non_empty(self):
+        record = self._record()
+        record["source"]["members"] = []
+        self._write_record(record)
+        self.assertEqual(
+            self.registry_problems(),
+            ["docs/evidence/x.json: source: members: must be a non-empty array"],
+        )
+
+    def test_evidence_member_hash_must_be_64_lowercase_hex(self):
+        record = self._record()
+        record["source"]["members"][0]["sha256"] = "A" * 64
+        self._write_record(record)
+        self.assertEqual(
+            self.registry_problems(),
+            ["docs/evidence/x.json: source: members[0]: key 'sha256' has the wrong format"],
+        )
+
+    def test_evidence_acquisition_with_unknown_key_refused(self):
+        record = self._record()
+        record["acquisition"]["extra"] = "x"
+        self._write_record(record)
+        self.assertEqual(self.registry_problems(), ["docs/evidence/x.json: acquisition: unknown key 'extra'"])
+
+    def test_evidence_script_hash_bool_refused(self):
+        record = self._record()
+        record["acquisition"]["script_sha256"]["acquire.py"] = True
+        self._write_record(record)
+        self.assertEqual(
+            self.registry_problems(),
+            ["docs/evidence/x.json: acquisition: script_sha256: key 'acquire.py' must be a string"],
+        )
+
+    def test_uppercase_json_extension_in_evidence_is_checked(self):
+        self.write("docs/evidence/x.JSON", '{"schema": "luminumbra.nope.v1"}\n')
+        self.assertEqual(
+            self.registry_problems(),
+            ["docs/evidence/x.JSON: schema 'luminumbra.nope.v1' is not registered"],
+        )
+
+    def test_mixed_case_json_extension_in_content_is_checked(self):
+        self.write("content/x.Json", '{"schema": "luminumbra.nope.v1"}\n')
+        self.assertEqual(
+            self.validate(),
+            ["content/x.Json: schema 'luminumbra.nope.v1' is not registered"],
+        )
 
     def test_evidence_top_level_must_be_an_object(self):
         self.write("docs/evidence/x.json", "[1]\n")

@@ -16,6 +16,7 @@ Exit codes: 0 clean, 1 problems found, 2 usage error.
 """
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -212,11 +213,14 @@ def _check_strict(rel, ext, data):
 def _json_strings(data):
     """Return every decoded object key and string value of a JSON document, or None when it does not parse.
 
-    Parse failures are left to the existing reports; nothing is raised here.
+    This is a lenient decode for the security scan, independent of the strict
+    preset parser: exponent numbers and other tokens the strict zone refuses
+    still decode here, so their strings are scanned. Parse failures are left to
+    the existing reports; nothing is raised here.
     """
     try:
-        obj = schema.loads_document(data.decode("utf-8"))
-    except Exception:
+        obj = json.loads(data.decode("utf-8"))
+    except (ValueError, RecursionError):
         return None
     strings = []
     stack = [obj]

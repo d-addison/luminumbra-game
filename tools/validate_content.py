@@ -56,6 +56,11 @@ def _zone_refusals(root):
     return problems
 
 
+def _is_json_name(name):
+    """Return True when the file name ends in .json in any letter case."""
+    return name.lower().endswith(".json")
+
+
 def _rel(root, full):
     return os.path.relpath(full, root).replace(os.sep, "/")
 
@@ -78,7 +83,7 @@ def _zone_files(root, zone, json_only):
         dirnames[:] = kept
         for name in filenames:
             full = os.path.join(dirpath, name)
-            if json_only and not name.endswith(".json") and not os.path.islink(full):
+            if json_only and not _is_json_name(name) and not os.path.islink(full):
                 continue
             found.append(_rel(root, full))
     return sorted(found)
@@ -133,7 +138,7 @@ def _check_entry(root, rel, schemas, globs, ctx):
     if os.path.islink(full):
         return [f"{rel}: symlink refused"]
 
-    is_json = rel.endswith(".json")
+    is_json = _is_json_name(rel)
     glob_fn = _find_glob(rel, globs)
     if not is_json and glob_fn is None:
         return [f"{rel}: unrecognised content file"]
