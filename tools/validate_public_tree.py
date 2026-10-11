@@ -9,7 +9,8 @@ Checked for each file in the set (git tracked files; with --worktree also
 untracked non-ignored files; without git, every file under ROOT except .git):
   symlinks, size limit, forbidden extensions, forbidden leading magic bytes,
   text-zone NUL and UTF-8 rules, strict-zone line endings, BOM, final LF and
-  JSON validity, and local path or credential shaped strings in text files.
+  JSON validity and nesting depth, and local path or credential shaped strings in
+  text files, including the decoded keys and string values of JSON files.
 
 Exit codes: 0 clean, 1 problems found, 2 usage error.
 """
@@ -21,18 +22,30 @@ import re
 import subprocess
 import sys
 
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+
+from lumlib import schema  # noqa: E402
+
 MAX_BYTES = 1048576
 
 FORBIDDEN_EXTENSIONS = frozenset(
     [
         # audio
         ".wav", ".ogg", ".mp3", ".flac", ".opus", ".fsb", ".bank",
+        ".m4a", ".aac", ".wma", ".aiff", ".aif", ".mid", ".midi",
+        # images
+        ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tga", ".dds", ".exr", ".hdr",
+        ".psd", ".webp", ".ktx", ".ktx2", ".tif", ".tiff",
+        # video
+        ".mp4", ".mkv", ".avi", ".mov", ".webm",
         # archives
         ".zip", ".7z", ".tar", ".gz", ".tgz", ".xz", ".zst", ".rar",
         # executables and libraries
         ".exe", ".dll", ".so", ".dylib", ".bin", ".msi",
-        # saves and chunks
-        ".lmr", ".lmc", ".lsave", ".sav",
+        # saves, runtime artifacts and chunks (release archives only, never git)
+        ".lmr", ".lmc", ".lmesh", ".ltex", ".lsave", ".sav",
         # logs and dumps
         ".log", ".dmp", ".mdmp",
         # SDK blobs
@@ -45,19 +58,42 @@ FORBIDDEN_MAGIC = (
     b"OggS",
     b"fLaC",
     b"ID3",
+    # executables: PE, ELF, Mach-O thin (32 and 64 bit, both byte orders) and universal
     b"MZ",
     b"\x7fELF",
+    b"\xfe\xed\xfa\xce",
+    b"\xfe\xed\xfa\xcf",
+    b"\xce\xfa\xed\xfe",
+    b"\xcf\xfa\xed\xfe",
+    b"\xca\xfe\xba\xbe",
+    # archives: zip local, central directory end, spanned; 7z; gzip; xz; bzip2; rar
     b"PK\x03\x04",
+    b"PK\x05\x06",
+    b"PK\x07\x08",
     b"7z\xbc\xaf",
     b"\x1f\x8b",
+    b"\xfd7zXZ\x00",
+    b"BZh",
+    b"Rar!\x1a\x07",
     b"SQLite format 3",
+    b"\x89PNG",
+    b"\xff\xd8\xff",
+    b"GIF87a",
+    b"GIF89a",
 )
+
+# Repo-relative posix paths exempt from the extension and magic refusals. Only
+# entries under assets/ count; the same path elsewhere is still refused.
+INVENTORIED_BINARY = frozenset()
 
 TEXT_EXTENSIONS = frozenset(
     [".md", ".json", ".py", ".cpp", ".h", ".yml", ".yaml", ".txt", ".traversal", ".gitignore"]
 )
 
 STRICT_PREFIXES = ("content/", "docs/evidence/")
+
+EVIDENCE_PREFIX = "docs/evidence/"
+_SCHEMA_ID_RE = re.compile(r"luminumbra\.[a-z0-9._-]+\.v[0-9]+")
 
 # Literal fragments that would match these rules are split by concatenation so
 # that this file does not match its own patterns.
@@ -67,6 +103,7 @@ ABSOLUTE_PATH_PATTERNS = (
     re.compile("/Use" "rs/"),
     re.compile("/l" "um/"),
     re.compile(r"/mnt/[a-z]/"),
+    re.compile(r"(?i)[a-z]:(?:\\{1,2}|/)(?:users|documents and settings)(?=[\\/\s]|$)"),
 )
 
 CREDENTIAL_PATTERNS = (
@@ -158,10 +195,66 @@ def _check_strict(rel, ext, data):
         problems.append(f"{rel}: missing final LF in strict zone")
     if ext == ".json":
         try:
-            json.loads(data.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError) as exc:
+            obj = schema.loads_document(data.decode("utf-8"))
+        except RecursionError:
+            problems.append(f"{rel}: json nesting is too deep")
+            return problems
+        except Exception as exc:
             problems.append(f"{rel}: invalid JSON in strict zone: {exc}")
+            return problems
+        if rel.startswith(EVIDENCE_PREFIX):
+            if not isinstance(obj, dict):
+                problems.append(f"{rel}: evidence JSON must be an object")
+            elif not isinstance(obj.get("schema"), str) or _SCHEMA_ID_RE.fullmatch(obj["schema"]) is None:
+                problems.append(f"{rel}: evidence JSON needs a schema key matching luminumbra.<name>.v<N>")
     return problems
+
+
+def _json_strings(data):
+    """Return every decoded object key and string value of a JSON document, or None when it does not parse.
+
+    This is a lenient decode for the security scan, independent of the strict
+    preset parser: exponent numbers and other tokens the strict zone refuses
+    still decode here, so their strings are scanned. Parse failures are left to
+    the existing reports; nothing is raised here.
+    """
+    try:
+        obj = json.loads(data.decode("utf-8"))
+    except (ValueError, RecursionError):
+        return None
+    strings = []
+    stack = [obj]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            for key, value in node.items():
+                strings.append(key)
+                stack.append(value)
+        elif isinstance(node, list):
+            stack.extend(node)
+        elif isinstance(node, str):
+            strings.append(node)
+    return strings
+
+
+_JSON_ESCAPE_RE = re.compile(r'\\(?:u([0-9a-fA-F]{4})|(["\\\\/bfnrt]))')
+_JSON_SIMPLE_ESCAPES = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+
+
+def _unescape_json_text(text):
+    """Resolve JSON string escapes in raw text without parsing the document.
+
+    Unlike a decode, this keeps overwritten duplicate-key values and survives
+    nesting depths a parser refuses, so the security scan also sees them.
+    """
+
+    def replace(match):
+        if match.group(1) is not None:
+            return chr(int(match.group(1), 16))
+        char = match.group(2)
+        return _JSON_SIMPLE_ESCAPES.get(char, char)
+
+    return _JSON_ESCAPE_RE.sub(replace, text)
 
 
 def _check_file(root, rel):
@@ -175,9 +268,10 @@ def _check_file(root, rel):
     if size > MAX_BYTES:
         return [f"{rel}: {size} bytes exceeds the {MAX_BYTES} byte limit"]
 
+    inventoried = rel.startswith("assets/") and rel in INVENTORIED_BINARY
     problems = []
     ext = _extension(rel.rsplit("/", 1)[-1])
-    if ext in FORBIDDEN_EXTENSIONS:
+    if not inventoried and ext in FORBIDDEN_EXTENSIONS:
         problems.append(f"{rel}: forbidden extension {ext}")
 
     try:
@@ -186,12 +280,13 @@ def _check_file(root, rel):
     except OSError as exc:
         return problems + [f"{rel}: cannot read file: {exc.strerror}"]
 
-    for magic in FORBIDDEN_MAGIC:
-        if data.startswith(magic):
-            problems.append(f"{rel}: forbidden file signature {magic!r}")
-            break
+    if not inventoried:
+        for magic in FORBIDDEN_MAGIC:
+            if data.startswith(magic):
+                problems.append(f"{rel}: forbidden file signature {magic!r}")
+                break
 
-    if ext in TEXT_EXTENSIONS or ext == "":
+    if ext in TEXT_EXTENSIONS or ext == "" or rel.startswith(STRICT_PREFIXES):
         if b"\x00" in data:
             problems.append(f"{rel}: NUL byte in text file")
         try:
@@ -203,10 +298,15 @@ def _check_file(root, rel):
         problems.extend(_check_strict(rel, ext, data))
 
     if b"\x00" not in data:
-        text = data.decode("utf-8", errors="replace")
-        if any(pattern.search(text) for pattern in ABSOLUTE_PATH_PATTERNS):
+        samples = [data.decode("utf-8", errors="replace")]
+        if ext == ".json":
+            samples.append(_unescape_json_text(samples[0]))
+            decoded = _json_strings(data)
+            if decoded is not None:
+                samples.extend(decoded)
+        if any(pattern.search(sample) for sample in samples for pattern in ABSOLUTE_PATH_PATTERNS):
             problems.append(f"{rel}: absolute local path")
-        if any(pattern.search(text) for pattern in CREDENTIAL_PATTERNS):
+        if any(pattern.search(sample) for sample in samples for pattern in CREDENTIAL_PATTERNS):
             problems.append(f"{rel}: credential-shaped string")
     return problems
 

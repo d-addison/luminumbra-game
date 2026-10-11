@@ -77,6 +77,13 @@ class LoadJsonFileTests(unittest.TestCase):
         with self.assertRaises(SchemaError):
             schema.load_json_file(path)
 
+    def test_rejects_exponent_tokens(self):
+        for text in (b'{"a": 1e0}', b'{"a": 6.0e1}', b'{"a": 1E+2}'):
+            with self.subTest(text=text):
+                path = self._write(text)
+                with self.assertRaisesRegex(SchemaError, "exponent number"):
+                    schema.load_json_file(path)
+
     def test_rejects_malformed_json_with_path(self):
         path = self._write(b'{"a": }')
         with self.assertRaises(SchemaError) as ctx:
