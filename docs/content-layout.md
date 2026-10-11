@@ -59,8 +59,14 @@ change.
 - Every non-JSON file must match a glob pattern, or it is reported as
   `unrecognised content file`.
 - Symlinks under `content/` are refused.
+- JSON files under `docs/evidence/` use the same rules: a top-level `schema` must
+  be registered (the download verification record is checked by
+  `validators/evidence.py`), and an unregistered or future id such as `...v999`
+  is reported as `schema 'X' is not registered`. Non-JSON files there are left to
+  the public tree guard. A symlink or non-directory `docs/evidence` is refused.
 
-If `content/` is absent, the script prints `no content/ directory` and exits 0.
+If neither `content/` nor any JSON file under `docs/evidence/` exists, the script
+prints `no content/ directory` and exits 0.
 
 ## Pending entries: `--allow-pending` and `--release`
 
@@ -84,7 +90,13 @@ walks the tree and skips `.git`. For each file it refuses:
   not valid UTF-8;
 - in the strict zones `content/` and `docs/evidence/`: CR bytes, a UTF-8 BOM,
   a missing final LF, and `.json` files that do not parse;
+- files whose leading bytes match an archive, executable or media signature
+  (ZIP, 7z, gzip, xz, bzip2, RAR, ELF, PE, Mach-O, and the others listed in the
+  tool), whatever their extension;
 - in every text file: absolute local path shapes and credential-shaped strings.
+  For `.json` files these checks also run on the decoded keys and string values,
+  so escaped forms such as `\` or `\/` are caught. A JSON nesting depth that
+  the parser refuses is reported as `json nesting is too deep` in the strict zones.
 
 The guard is a tripwire, not a proof of absence. It catches what it knows how to
 recognise. A clean run does not show that the repository is free of private
