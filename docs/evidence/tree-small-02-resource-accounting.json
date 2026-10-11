@@ -1,0 +1,203 @@
+{
+  "schema": "luminumbra.game.resource-accounting.v1",
+  "asset": "tree-small-02",
+  "scope": "tree-small-02 pack only; file and payload sizes, not GPU allocations",
+  "engine_revision": "f18098d72077a4682dae1df96915a4d0c95b6889",
+  "source_receipt": {
+    "schema": "luminumbra.game.asset-conversion.v1",
+    "sha256": null
+  },
+  "meshes": [
+    {
+      "path": "data/models/trees/tree_small_02_branches.lmesh",
+      "lod": 0,
+      "part": "branches",
+      "vertices": 31951,
+      "triangles": 46000,
+      "vertex_bytes": 1022432,
+      "index_bytes": 552000,
+      "header_bytes": 28,
+      "file_bytes": 1574460,
+      "basis": "estimated"
+    },
+    {
+      "path": "data/models/trees/tree_small_02_branches.lod1.lmesh",
+      "lod": 1,
+      "part": "branches",
+      "vertices": 20773,
+      "triangles": 27500,
+      "vertex_bytes": 664736,
+      "index_bytes": 330000,
+      "header_bytes": 28,
+      "file_bytes": 994764,
+      "basis": "estimated"
+    },
+    {
+      "path": "data/models/trees/tree_small_02_branches.lod2.lmesh",
+      "lod": 2,
+      "part": "branches",
+      "vertices": 12251,
+      "triangles": 13000,
+      "vertex_bytes": 392032,
+      "index_bytes": 156000,
+      "header_bytes": 28,
+      "file_bytes": 548060,
+      "basis": "estimated"
+    },
+    {
+      "path": "data/models/trees/tree_small_02_leaves.lmesh",
+      "lod": 0,
+      "part": "leaves",
+      "vertices": 121000,
+      "triangles": 60500,
+      "vertex_bytes": 3872000,
+      "index_bytes": 726000,
+      "header_bytes": 28,
+      "file_bytes": 4598028,
+      "basis": "estimated"
+    },
+    {
+      "path": "data/models/trees/tree_small_02_leaves.lod1.lmesh",
+      "lod": 1,
+      "part": "leaves",
+      "vertices": 121000,
+      "triangles": 60500,
+      "vertex_bytes": 3872000,
+      "index_bytes": 726000,
+      "header_bytes": 28,
+      "file_bytes": 4598028,
+      "basis": "estimated"
+    },
+    {
+      "path": "data/models/trees/tree_small_02_leaves.lod2.lmesh",
+      "lod": 2,
+      "part": "leaves",
+      "vertices": 121000,
+      "triangles": 60500,
+      "vertex_bytes": 3872000,
+      "index_bytes": 726000,
+      "header_bytes": 28,
+      "file_bytes": 4598028,
+      "basis": "estimated"
+    },
+    {
+      "path": "data/models/trees/tree_small_02_trunk.lmesh",
+      "lod": 0,
+      "part": "trunk",
+      "vertices": 6176,
+      "triangles": 9996,
+      "vertex_bytes": 197632,
+      "index_bytes": 119952,
+      "header_bytes": 28,
+      "file_bytes": 317612,
+      "basis": "estimated"
+    },
+    {
+      "path": "data/models/trees/tree_small_02_trunk.lod1.lmesh",
+      "lod": 1,
+      "part": "trunk",
+      "vertices": 1920,
+      "triangles": 2597,
+      "vertex_bytes": 61440,
+      "index_bytes": 31164,
+      "header_bytes": 28,
+      "file_bytes": 92632,
+      "basis": "estimated"
+    },
+    {
+      "path": "data/models/trees/tree_small_02_trunk.lod2.lmesh",
+      "lod": 2,
+      "part": "trunk",
+      "vertices": 884,
+      "triangles": 998,
+      "vertex_bytes": 28288,
+      "index_bytes": 11976,
+      "header_bytes": 28,
+      "file_bytes": 40292,
+      "basis": "estimated"
+    }
+  ],
+  "textures": [
+    {
+      "path": "data/textures/models/tree_branch_albedo_512.ltex",
+      "file_bytes": 1398117,
+      "header_bytes": 17,
+      "payload_bytes": 1398100,
+      "basis": "estimated"
+    },
+    {
+      "path": "data/textures/models/tree_branch_arm_512.ltex",
+      "file_bytes": 1398117,
+      "header_bytes": 17,
+      "payload_bytes": 1398100,
+      "basis": "estimated"
+    },
+    {
+      "path": "data/textures/models/tree_branch_normal_512.ltex",
+      "file_bytes": 1398117,
+      "header_bytes": 17,
+      "payload_bytes": 1398100,
+      "basis": "estimated"
+    },
+    {
+      "path": "data/textures/models/tree_leaves_albedo_512.ltex",
+      "file_bytes": 1398117,
+      "header_bytes": 17,
+      "payload_bytes": 1398100,
+      "basis": "estimated"
+    },
+    {
+      "path": "data/textures/models/tree_leaves_arm_512.ltex",
+      "file_bytes": 1398117,
+      "header_bytes": 17,
+      "payload_bytes": 1398100,
+      "basis": "estimated"
+    },
+    {
+      "path": "data/textures/models/tree_leaves_normal_512.ltex",
+      "file_bytes": 1398117,
+      "header_bytes": 17,
+      "payload_bytes": 1398100,
+      "basis": "estimated"
+    },
+    {
+      "path": "data/textures/models/tree_trunk_albedo_512.ltex",
+      "file_bytes": 1398117,
+      "header_bytes": 17,
+      "payload_bytes": 1398100,
+      "basis": "estimated"
+    },
+    {
+      "path": "data/textures/models/tree_trunk_arm_512.ltex",
+      "file_bytes": 1398117,
+      "header_bytes": 17,
+      "payload_bytes": 1398100,
+      "basis": "estimated"
+    },
+    {
+      "path": "data/textures/models/tree_trunk_normal_512.ltex",
+      "file_bytes": 1398117,
+      "header_bytes": 17,
+      "payload_bytes": 1398100,
+      "basis": "estimated"
+    }
+  ],
+  "totals": {
+    "mesh_file_bytes": 17361904,
+    "mesh_triangles_by_lod": {
+      "lod0": 116496,
+      "lod1": 90597,
+      "lod2": 74498
+    },
+    "texture_file_bytes": 12583053,
+    "texture_payload_bytes": 12582900,
+    "leaf_surfaces": 30250
+  },
+  "measured": [],
+  "notes": [
+    "Sizes are file and payload byte counts derived from the conversion receipt, not GPU allocations.",
+    "Excluded: texture-array padding, driver and API overhead, separate LOD buffers and other GPU-side allocations. Measured VRAM is a native item.",
+    "Engine-side estimates (static-model textures, impostor textures, forest resource estimates) are in the engine's docs/v0.3-acceptance.md and are not duplicated here.",
+    "Leaf fitter maximum relative fit error 0.15414 of the leaf bounding-box diagonal (refusal bound 0.20)."
+  ]
+}
