@@ -76,6 +76,10 @@ def _report(problems, ok_message):
 DEEP_JSON_REASON = "not valid JSON: nesting is too deep"
 
 
+def _os_reason(exc):
+    return exc.strerror or type(exc).__name__
+
+
 def _cmd_validate(args):
     root = _root_dir(args.root)
     if root is None:
@@ -87,6 +91,9 @@ def _cmd_validate(args):
         problems = workload.tree_problems(root, allow_pending=args.allow_pending)
     except RecursionError:
         print("%s: %s" % (root, DEEP_JSON_REASON))
+        return 1
+    except OSError as exc:
+        print("%s: cannot read: %s" % (root, _os_reason(exc)))
         return 1
     return _report(problems, "workloads ok")
 
@@ -102,6 +109,9 @@ def _cmd_check(args):
         problems = workload.tree_problems(root, allow_pending=True)
     except RecursionError:
         print("%s: %s" % (root, DEEP_JSON_REASON))
+        return 1
+    except OSError as exc:
+        print("%s: cannot read: %s" % (root, _os_reason(exc)))
         return 1
     return _report(problems, "traversal ok")
 
@@ -126,7 +136,7 @@ def _cmd_emit(args):
     try:
         obj = load_json_file(path)
     except OSError as exc:
-        print("%s: cannot read file: %s" % (path, exc.strerror), file=sys.stderr)
+        print("%s: cannot read: %s" % (path, _os_reason(exc)), file=sys.stderr)
         return 2
     except SchemaError as exc:
         print(str(exc), file=sys.stderr)
@@ -160,7 +170,7 @@ def _cmd_identity(args):
         with open(path, "rb") as handle:
             data = handle.read()
     except OSError as exc:
-        print("%s: cannot read file: %s" % (path, exc.strerror), file=sys.stderr)
+        print("%s: cannot read: %s" % (path, _os_reason(exc)), file=sys.stderr)
         return 2
     if b"\r" in data:
         print("%s: CR is not allowed; use LF newlines" % path)

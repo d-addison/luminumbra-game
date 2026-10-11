@@ -131,6 +131,9 @@ def _duration(value):
 
     The exact product duration * tick_rate must lie within the engine tolerance of
     an integer count in [1, 18000]; the count is the nearest integer to the product.
+    The engine evaluates the same product in binary floating point, so the float
+    result must also lie within traversal.TICK_TOLERANCE of that count. Both checks
+    run here so that pending and pinned workloads refuse exactly what the engine refuses.
     """
     text = _number_text(value, "duration_seconds")
     if len(text) > _MAX_DURATION_CHARS:
@@ -143,6 +146,8 @@ def _duration(value):
     if not 1 <= count <= traversal.MAX_EXPECTED_TICKS:
         raise WorkloadError("duration_seconds * tick_rate must be in [1, 18000]")
     if abs(_EXACT.subtract(product, Decimal(count))) > _TICK_SLACK:
+        raise WorkloadError("duration_seconds * tick_rate must be an integer")
+    if abs(float(text) * traversal.REQUIRED_TICK_RATE - count) > traversal.TICK_TOLERANCE:
         raise WorkloadError("duration_seconds * tick_rate must be an integer")
     return text, count
 
@@ -403,10 +408,17 @@ def emit_text(obj, stem: str, where: str) -> str:
         raise WorkloadError(str(exc)) from None
 
 
+def _os_reason(exc: OSError) -> str:
+    """Return a one-line reason for a failed file read (the OS message when present)."""
+    return exc.strerror or type(exc).__name__
+
+
 def _read_json(full: str, rel: str):
     """Load a JSON source; the failure is a WorkloadError whose reason omits the path."""
     try:
         return schema.load_json_file(full)
+    except OSError as exc:
+        raise WorkloadError("cannot read: %s" % _os_reason(exc)) from None
     except SchemaError as exc:
         text = str(exc)
         prefix = full + ": "
@@ -445,7 +457,12 @@ def tree_problems(root: str, allow_pending: bool, release: bool = False) -> list
     workload_dir = os.path.join(root, *WORKLOAD_DIR.split("/"))
     if not os.path.isdir(workload_dir):
         return problems
-    for name in sorted(os.listdir(workload_dir)):
+    try:
+        workload_names = sorted(os.listdir(workload_dir))
+    except OSError as exc:
+        workload_names = []
+        problems.append("%s: cannot read: %s" % (WORKLOAD_DIR, _os_reason(exc)))
+    for name in workload_names:
         full = os.path.join(workload_dir, name)
         rel = WORKLOAD_DIR + "/" + name
         if name == "traversal" and os.path.isdir(full):
@@ -463,7 +480,12 @@ def tree_problems(root: str, allow_pending: bool, release: bool = False) -> list
 
     traversal_dir = os.path.join(root, *TRAVERSAL_DIR.split("/"))
     if os.path.isdir(traversal_dir):
-        for name in sorted(os.listdir(traversal_dir)):
+        try:
+            traversal_names = sorted(os.listdir(traversal_dir))
+        except OSError as exc:
+            traversal_names = []
+            problems.append("%s: cannot read: %s" % (TRAVERSAL_DIR, _os_reason(exc)))
+        for name in traversal_names:
             rel = TRAVERSAL_DIR + "/" + name
             full = os.path.join(traversal_dir, name)
             if os.path.isdir(full) or not name.endswith(TRAVERSAL_SUFFIX):
@@ -474,6 +496,9 @@ def tree_problems(root: str, allow_pending: bool, release: bool = False) -> list
                     text = handle.read().decode("utf-8")
             except UnicodeDecodeError:
                 problems.append("%s: not valid UTF-8" % rel)
+                continue
+            except OSError as exc:
+                problems.append("%s: cannot read: %s" % (rel, _os_reason(exc)))
                 continue
             problems.extend(traversal_text_problems(rel, text, root))
     return problems
@@ -518,10 +543,14 @@ def _check_receipt(path: str, obj, root: str, release: bool) -> None:
         if pin is not None and obj[key] != pin:
             raise WorkloadError("%s does not match the pin of workload '%s'" % (key, workload_id))
 
-    trav_abs = os.path.join(root, *(TRAVERSAL_DIR + "/" + workload_id + TRAVERSAL_SUFFIX).split("/"))
+    trav_rel = TRAVERSAL_DIR + "/" + workload_id + TRAVERSAL_SUFFIX
+    trav_abs = os.path.join(root, *trav_rel.split("/"))
     if os.path.isfile(trav_abs):
-        with open(trav_abs, "rb") as handle:
-            digest = hashlib.sha256(handle.read()).hexdigest()
+        try:
+            with open(trav_abs, "rb") as handle:
+                digest = hashlib.sha256(handle.read()).hexdigest()
+        except OSError as exc:
+            raise WorkloadError("cannot read: %s: %s" % (trav_rel, _os_reason(exc))) from None
         if digest != obj["traversal_sha256"]:
             raise WorkloadError("traversal_sha256 does not match the committed traversal of '%s'" % workload_id)
     elif release:
