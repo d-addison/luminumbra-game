@@ -16,11 +16,13 @@ gate (open defects and open blocking limitations are refused) and requires
 --artifact-root.
 
 Exit codes: 0 ok, 1 invalid, 2 usage error. Problems are printed one per line
-as PATH: reason, at most 50 lines.
+as PATH: reason, at most 50 lines. Control characters in a printed diagnostic
+are backslash-escaped (\\n, \\r, \\t, \\xNN) so that each problem stays on one line.
 """
 
 import argparse
 import os
+import re
 import sys
 
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -37,6 +39,22 @@ from validators.acceptance import (  # noqa: E402
 
 MAX_PROBLEMS = 50
 STRUCTURE_ONLY_LINE = "structure-only: artifacts NOT verified"
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+_NAMED_ESCAPES = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
+
+
+def _escape_control(match):
+    char = match.group(0)
+    return _NAMED_ESCAPES.get(char) or "\\x%02x" % ord(char)
+
+
+def _printable(text):
+    """Return TEXT with control characters backslash-escaped, so one diagnostic is one line."""
+    return _CONTROL.sub(_escape_control, str(text))
+
+
+def _say(text, stream=None):
+    print(_printable(text), file=stream)
 
 
 def _build_parser():
@@ -69,7 +87,7 @@ def _build_parser():
 
 
 def _usage(message):
-    print(message, file=sys.stderr)
+    _say(message, sys.stderr)
     return 2
 
 
@@ -93,10 +111,10 @@ def _run(argv):
     try:
         doc = load_json_file(args.bundle)
     except SchemaError as exc:
-        print(exc)
+        _say(exc)
         return 1
     except OSError as exc:
-        print("%s: cannot read file: %s" % (args.bundle, exc.strerror))
+        _say("%s: cannot read file: %s" % (args.bundle, exc.strerror))
         return 1
 
     problems = validate_bundle(doc, release=args.release)
@@ -104,7 +122,7 @@ def _run(argv):
         problems = verify_artifacts(doc, args.artifact_root, args.audio_off_marker)
     if problems:
         for line in problems[:MAX_PROBLEMS]:
-            print(line)
+            _say(line)
         return 1
     if args.structure_only:
         print(STRUCTURE_ONLY_LINE)
@@ -119,7 +137,7 @@ def main(argv=None):
     except SystemExit as exc:
         return int(exc.code or 0)
     except Exception as exc:  # never print a traceback for a bundle or store problem
-        print("internal error: %s: %s" % (type(exc).__name__, exc))
+        _say("internal error: %s: %s" % (type(exc).__name__, exc))
         return 1
 
 

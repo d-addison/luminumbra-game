@@ -632,6 +632,57 @@ class SaveRuleTest(_BundleTest):
             doc["saves"][0]["files"][0]["path"] = bad
             self.assertProblem(doc, "saves[0].files[0].path: must be a portable relative path")
 
+    def test_windows_device_names_refused_in_any_component(self):
+        cases = (
+            ("CON.txt", "CON.txt"),
+            ("nul", "nul"),
+            ("prn", "prn"),
+            ("world/aux/manifest.txt", "aux"),
+            ("world/com1/manifest.txt", "com1"),
+            ("world/LPT9.log", "LPT9.log"),
+            ("world/con .txt", "con .txt"),
+        )
+        for bad, component in cases:
+            with self.subTest(path=bad):
+                doc = self.bundle()
+                doc["saves"][0]["files"][0]["path"] = bad
+                self.assertProblem(
+                    doc,
+                    "saves[0].files[0].path: component '%s' is a reserved Windows device name"
+                    % component,
+                )
+
+    def test_windows_forbidden_characters_refused_in_components(self):
+        for bad in ("manifest.txt:private", "world/a*b.txt", "world/q?.txt", 'world/"x".txt',
+                    "world/<a>.txt", "world/a|b.txt", "world/a>b.txt"):
+            with self.subTest(path=bad):
+                doc = self.bundle()
+                doc["saves"][0]["files"][0]["path"] = bad
+                component = [part for part in bad.split("/") if any(c in part for c in ':*?"<>|')][0]
+                self.assertProblem(
+                    doc,
+                    "saves[0].files[0].path: component '%s' contains a character Windows does not allow"
+                    % component,
+                )
+
+    def test_components_ending_in_dot_or_space_refused(self):
+        for bad, component in (("a.", "a."), ("a ", "a "), ("world/dir./manifest.txt", "dir.")):
+            with self.subTest(path=bad):
+                doc = self.bundle()
+                doc["saves"][0]["files"][0]["path"] = bad
+                self.assertProblem(
+                    doc,
+                    "saves[0].files[0].path: component '%s' ends in a dot or a space" % component,
+                )
+
+    def test_normal_nested_paths_accepted(self):
+        for good in ("world/manifest.txt", "world/slot one/manifest.txt",
+                     "world/console.txt", "world/nullify/manifest.txt", "world/a.b/c.d"):
+            with self.subTest(path=good):
+                doc = self.bundle()
+                doc["saves"][0]["files"][0]["path"] = good
+                self.assertClean(doc)
+
     def test_empty_save_files_refused(self):
         doc = self.bundle()
         doc["saves"][0]["files"] = []
@@ -658,6 +709,18 @@ class SceneRuleTest(_BundleTest):
         doc = self.bundle()
         doc["scenes"][0]["defects"][0]["disposition"] = "maybe"
         self.assertProblem(doc, "scenes[0].defects[0].disposition: must be one of")
+
+    def test_duplicate_defect_id_in_one_scene_refused(self):
+        doc = self.bundle()
+        doc["scenes"][0]["defects"].append({"id": "shadow-seam", "disposition": "open", "note": ""})
+        self.assertProblem(doc, "scenes[0].defects[1]: duplicate id 'shadow-seam'")
+        self.assertProblem(doc, "scenes[0].defects[1]: duplicate id 'shadow-seam'", release=True)
+
+    def test_same_defect_id_in_two_scenes_accepted(self):
+        doc = self.bundle()
+        doc["scenes"][2]["defects"].append({"id": "shadow-seam", "disposition": "fixed", "note": ""})
+        self.assertClean(doc)
+        self.assertNoProblem(doc, "duplicate id")
 
     def test_open_defect_accepted_outside_release(self):
         doc = self.bundle()
@@ -916,6 +979,41 @@ class PrivateMaterialTest(_BundleTest):
                 doc = self.bundle()
                 doc["historical"][0]["disposition"] = "item" + extension
                 self.assertProblem(doc, "private file extension '%s'" % extension.lower())
+
+    def test_private_extension_ending_a_filename_token_refused(self):
+        for text in (
+            "see capture.wav for details",
+            "capture.wav",
+            "capture.wav, then retry",
+            "capture.wav; then retry",
+            "capture.wav: attached",
+            "capture.wav? no",
+            "capture.wav! no",
+            "capture.wav. Next line",
+            "capture.wav.",
+            "(capture.wav)",
+            "[capture.wav]",
+            "'capture.wav'",
+            '"capture.wav"',
+            "{capture.wav}",
+        ):
+            with self.subTest(text=text):
+                doc = self.bundle()
+                doc["historical"][0]["disposition"] = text
+                self.assertProblem(doc, "historical[0].disposition: private file extension '.wav'")
+
+    def test_private_extension_in_upper_case_refused_in_text(self):
+        doc = self.bundle()
+        doc["historical"][0]["disposition"] = "see CAPTURE.WAV for details"
+        self.assertProblem(doc, "historical[0].disposition: private file extension '.wav'")
+
+    def test_innocent_text_near_private_extensions_accepted(self):
+        for text in ("a.wavelength", "awav", "the wav file", "capture.wavelength",
+                     "data.apple", "notes.opusx"):
+            with self.subTest(text=text):
+                doc = self.bundle()
+                doc["historical"][0]["disposition"] = text
+                self.assertNoProblem(doc, "private file extension")
 
     def test_drive_path_string_refused(self):
         doc = self.bundle()
@@ -1183,6 +1281,24 @@ class CliTest(unittest.TestCase):
         code, out, _err = _run_cli([str(self.bundle), "--structure-only"])
         self.assertEqual(code, 1)
         self.assertEqual(out.splitlines(), ["policy: unknown key 'audio_off_marker'"])
+
+    def test_control_characters_in_a_key_keep_the_diagnostic_on_one_line(self):
+        cases = (
+            ("bad\nkey", "bad\\nkey"),
+            ("bad\rkey", "bad\\rkey"),
+            ("bad\tkey", "bad\\tkey"),
+            ("bad\x01key", "bad\\x01key"),
+            ("bad\x7fkey", "bad\\x7fkey"),
+        )
+        for raw, escaped in cases:
+            with self.subTest(key=escaped):
+                doc = make_bundle()
+                doc["policy"][raw] = 1
+                _write_bundle(self.bundle, doc)
+                code, out, _err = _run_cli([str(self.bundle), "--structure-only"])
+                self.assertEqual(code, 1)
+                self.assertEqual(out.count("\n"), 1, out)
+                self.assertEqual(out.splitlines(), ["policy: unknown key '%s'" % escaped])
 
     def test_structure_only_prints_final_line(self):
         code, out, _err = _run_cli([str(FIXTURES / "valid.json"), "--structure-only"])

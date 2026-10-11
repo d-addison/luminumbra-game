@@ -71,6 +71,24 @@ _DRIVE_PATH = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:(?:\\|/)")
 _UNC_PATH = re.compile(r"""(?:^|(?<=[\s"'()\[\]{},;=<]))(?:\\\\\?\\|\\\\[^\\\s]+\\|//[^/\\\s]+/)""")
 _REQUIRED_LIMITATIONS = ("finite-residency", "distant-cave-edit-omitted")
 _LOCAL_PATTERNS = (re.compile("/ho" "me/"), re.compile("/Us" "ers/"))
+# A private extension ends a filename token: it follows a filename character and is
+# followed by the end of the text, whitespace, a quote, a closing bracket, a comma,
+# a semicolon, a colon, a question or exclamation mark, or a full stop that ends a
+# sentence. Matching ignores case, so a.wavelength and awav are not refused.
+_PRIVATE_FILE = re.compile(
+    r"(?<=[\w\-])("
+    + "|".join(re.escape(extension) for extension in PRIVATE_EXTENSIONS)
+    + r")(?=\Z|[\s\"')\]},;:?!]|\.(?=\s|\Z))",
+    re.IGNORECASE,
+)
+# Windows reserved device names, matched on the part before the first dot, and the
+# characters Windows refuses in a path component.
+_WINDOWS_DEVICE_NAMES = frozenset(
+    ["CON", "PRN", "AUX", "NUL"]
+    + ["COM%d" % number for number in range(1, 10)]
+    + ["LPT%d" % number for number in range(1, 10)]
+)
+_WINDOWS_FORBIDDEN_CHARS = frozenset(':*?"<>|')
 
 
 def _where(path):
@@ -368,6 +386,16 @@ def _check_portable_path(problems, value, path):
             "%s: must be a portable relative path (no leading slash, backslash, '..', or drive)"
             % path
         )
+        return
+    for part in parts:
+        if part.split(".", 1)[0].rstrip(" ").upper() in _WINDOWS_DEVICE_NAMES:
+            problems.append("%s: component '%s' is a reserved Windows device name" % (path, part))
+        elif any(char in _WINDOWS_FORBIDDEN_CHARS for char in part):
+            problems.append(
+                "%s: component '%s' contains a character Windows does not allow" % (path, part)
+            )
+        elif part.endswith(".") or part.endswith(" "):
+            problems.append("%s: component '%s' ends in a dot or a space" % (path, part))
 
 
 def _check_saves(problems, value, path):
@@ -424,12 +452,17 @@ def _check_scenes(problems, value, path, release):
         defects_path = _join(here, "defects")
         if not _list(problems, scene["defects"], defects_path):
             continue
+        defect_ids = set()
         for position, defect in enumerate(scene["defects"]):
             defect_here = "%s[%d]" % (defects_path, position)
             if not _keys(problems, defect, defect_here, ("disposition", "id", "note")):
                 continue
             if not isinstance(defect["id"], str) or not defect["id"]:
                 problems.append("%s: must be a non-empty string" % _join(defect_here, "id"))
+            elif defect["id"] in defect_ids:
+                problems.append("%s: duplicate id '%s'" % (defect_here, defect["id"]))
+            else:
+                defect_ids.add(defect["id"])
             disposition = defect["disposition"]
             if disposition not in DISPOSITIONS:
                 problems.append(
@@ -537,14 +570,13 @@ def _check_diagnostics(problems, value, path):
 def _scan_strings(value, path, problems):
     """Refuse private extensions and local or network path shapes in every string value."""
     if isinstance(value, str):
-        lowered = value.lower()
-        for extension in PRIVATE_EXTENSIONS:
-            if lowered.endswith(extension):
-                problems.append(
-                    "%s: private file extension '%s' is not allowed; evidence stores hashes and counts only"
-                    % (_where(path), extension)
-                )
-                return
+        private = _PRIVATE_FILE.search(value)
+        if private is not None:
+            problems.append(
+                "%s: private file extension '%s' is not allowed; evidence stores hashes and counts only"
+                % (_where(path), private.group(1).lower())
+            )
+            return
         if (
             _DRIVE_PATH.search(value)
             or _UNC_PATH.search(value)
