@@ -1,0 +1,105 @@
+# Packaged acceptance runbook for v0.3 (game issue #4)
+
+This runbook covers the packaged content, saved-world, and audio-off acceptance
+for the v0.3 release. It sets the final v0.3 criteria: audio is off, and no
+audible-quality criterion applies to this release.
+
+Engine baseline: `b56cdba12e425ed2786778d5b02c98ba61466584`.
+
+The controlling verdict is the engine document `docs/v0.3-acceptance.md`. This
+runbook does not override it. The evidence bundle records what that verdict
+rests on: hashes and counts of the native runs.
+
+**NEEDS-NATIVE-RUN**: the packaged acceptance has not been executed on the
+qualified machine. No session, scene, forest, or launcher evidence exists yet.
+This marker stays until a release-mode validation of a bundle passes.
+
+## Two validation modes
+
+The validator is `tools/validate_acceptance_evidence.py`. It takes exactly one
+of two modes.
+
+- `--structure-only` checks the bundle shape and its cross-field rules: session
+  kinds and exit codes, audio consistency, refusal and save rules, scene and
+  defect rules, forest agreement, limitations, historical records, and private
+  material. It does not open any artifact. On success its last line is
+  `structure-only: artifacts NOT verified`.
+- `--artifact-root DIR` also verifies the artifacts. Every hash the bundle names
+  must exist under the artifact root and hash to its name. Each audio-off session
+  journal must contain the policy marker as UTF-8 bytes. On success it prints
+  `artifacts verified: <n>`, where `<n>` is the count of distinct artifacts.
+
+`--release` adds the release gate. It refuses any scene defect with disposition
+`open`, and any limitation with status `open` and `blocks_release` true. It
+requires `--artifact-root`. Using `--release` without `--artifact-root` is a usage
+error (exit 2). Giving both modes, or neither, is also a usage error.
+
+Exit codes: 0 ok, 1 invalid, 2 usage error. Problems print one per line as
+`PATH: reason`, where PATH is a json-path such as `sessions[2].exit_code`, and at
+most 50 lines are printed.
+
+## Content-addressed artifact root
+
+The artifact root is a directory with one file per distinct hash:
+
+```
+DIR/
+  sha256/
+    <64 lowercase hex characters>   one file per hash, content = the artifact
+```
+
+A file's name is the sha256 of its content. The hashes the bundle names are the
+package archive, each session's command and journal, each save file's before
+and after hash, each scene capture, the forest submission and report, the
+launcher identity, and the disabled-backend proof.
+
+## Evidence is hash-only
+
+The bundle stores hashes and counts, never the material. Do not commit private
+audio, Steam SDK payloads, saves, journals, captures, or reports to this
+repository. The validator refuses private file extensions and local absolute
+path shapes in every string of a bundle, so a bundle that names such material is
+rejected.
+
+## Criteria
+
+Each row names the criterion, the command or procedure that produces the
+evidence, the artifact expected, and the bundle key that records the result.
+
+| Criterion | Command or procedure | Expected artifact | Evidence key |
+|---|---|---|---|
+| Pinned composition (client, server, tree) | Build the package from the pinned engine and game revisions; run `python3 -I -B tools/validate_public_tree.py --root .` on the game tree | Package archive; clean tree guard | `package.git_sha`, `package.archive_sha256`, `engine.rev`, `game.rev`, `content.packs` |
+| Save flow: create, edit, save, restart, load | Operator supplies the packaged launch command; its sha256 goes in `command_sha256`. Run each step and keep its journal | Command and journal per session; before and after hash of each edited save file | `sessions[]` kinds `create`, `edit`, `save`, `restart`, `load`; `saves[].files` |
+| Repeated switching | Same as above, switching between two saved worlds at least twice | Command and journal per switch | `sessions[]` kind `switch`, at least two |
+| Refusals with refusal code and unchanged saves | Trigger each refusal path; record the exit code and refusal code | Command and journal per refusal; refusal exit codes listed in policy | `sessions[]` kind `refusal` with `refusal_code` and `saves_unchanged`; `saves[]` names ending `-refusal` |
+| Six settled scenes, each with a defect disposition | Capture each of six scenes; record each defect as `accepted`, `fixed`, or `waived` (release refuses `open`) | Capture per scene | `scenes[]` (at least six), `settled`, `defects[].disposition` |
+| Forest submission and report agreement | Run the forest check described in the engine document; record both documents | Forest submission and report documents | `forest.agree`, `forest.submission_sha256`, `forest.report_sha256` |
+| Normal startup selects null audio regardless of saved volume | Launch the packaged client with a nonzero saved master volume and without an audio flag | Journal | `sessions[]` kind `restart` or `load`, `audio_mode` `null`, `saved_master` above zero |
+| The audio-off flag wins over a diagnostic opt-in | Launch with the audio-off flag while the diagnostic opt-in is set | Journal containing the audio-off marker | `sessions[]` id `restart-no-audio`: `audio_mode` `off`, `no_audio_flag` true |
+| Disabled settings controls preserve settings | Operator checks each disabled settings control and confirms the stored settings are unchanged | Proof record | `disabled_backend.proof_sha256`, `disabled_backend.settings_preserved` |
+| Preview launcher stays audio-off and its guard holds | Run the preview launcher; record its identity and the preview session | Launcher identity; preview journal with the audio-off marker | `launcher.identity_sha256`, `launcher.preview_audio_off`; `sessions[]` kind `preview` |
+| Finite residency and distant cave/edit omissions preserved | Recorded as documented limitations; confirm the engine document still states them | None (documented limitation) | `limitations[]` ids `finite-residency`, `distant-cave-edit-omitted` |
+| Historical application hang kept as a record | Kept as the historical record of the client hang; never counted as a session exit | None | `historical[]` kind `application-hang`; exit code 0xCFFFFFFF (3489660927 unsigned, -805306369 signed) refused in every session |
+
+## Native handoff
+
+| Item | Value |
+|---|---|
+| Owner | Operator on the qualified machine |
+| Candidate identity | The package git sha and the package archive sha256 in the bundle |
+| Commands | The criteria commands above; the packaged launch command is supplied by the operator and its sha256 goes in `command_sha256` |
+| Completion | A release-mode validation passes: `python3 -I -B tools/validate_acceptance_evidence.py BUNDLE.json --artifact-root DIR --release` exits 0 and prints `artifacts verified: <n>` |
+
+Until that release-mode validation passes, the status of this runbook is
+NEEDS-NATIVE-RUN.
+
+## Commands for the bundle
+
+```
+python3 -I -B tools/validate_acceptance_evidence.py BUNDLE.json --structure-only
+python3 -I -B tools/validate_acceptance_evidence.py BUNDLE.json --artifact-root DIR
+python3 -I -B tools/validate_acceptance_evidence.py BUNDLE.json --artifact-root DIR --release
+```
+
+The bundle schema is `luminumbra.game.acceptance-evidence.v1`. CI runs the unit
+tests and the public tree guard. It does not run the packaged client.

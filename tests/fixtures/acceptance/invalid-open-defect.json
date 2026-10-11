@@ -1,0 +1,1 @@
+{"scenes": [{"capture_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "defects": [{"disposition": "open", "id": "lod-pop", "note": ""}], "id": "forest-edge", "settled": true}], "schema": "luminumbra.game.acceptance-evidence.v1"}

@@ -1,0 +1,1 @@
+{"schema": "luminumbra.game.acceptance-evidence.v1", "sessions": [{"audio_mode": "off", "command_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "exit_code": 0, "id": "restart-no-audio", "journal_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "kind": "restart", "no_audio_flag": false, "saved_master": 75}]}
