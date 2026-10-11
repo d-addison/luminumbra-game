@@ -1,0 +1,167 @@
+{
+  "schema": "luminumbra.game.scene-set.v1",
+  "id": "distant-world",
+  "description": "Distant-world scene set for issue 30: four distance stations on the cave-dense and caverns presets, two control fixtures, and three far-horizon smoke rows. Poses, hashes and dispositions are filled only by the native discovery and qualification runs.",
+  "settle_limit_seconds": 90,
+  "profiles": ["quality", "performance"],
+  "displays": ["3840x1600", "3440x1440"],
+  "status": "pending-native-discovery",
+  "stations": [
+    {
+      "id": "tunnel-interior",
+      "preset": "cave_dense",
+      "seed": 424242,
+      "intent": "Deep cave interior inside the cave-dense carved network, at the camera position (distance 0).",
+      "expected_features": ["cave-interior", "carved-tunnels"],
+      "distance_m": 0,
+      "pose": null,
+      "status": "pending-native-discovery",
+      "qualification": {
+        "wanted_set_sha256": null,
+        "coverage_sha256": null,
+        "tiers": [],
+        "requirements": {"below_horizon_sky_percent_max": 2, "seam_bands": 0, "outer_edge": false, "tiers_complete": true}
+      },
+      "dispositions": {"quality": null, "performance": null}
+    },
+    {
+      "id": "cave-mouth-2km",
+      "preset": "cave_dense",
+      "seed": 424242,
+      "intent": "Surface cave mouth about 2 km from the camera on the cave-dense preset.",
+      "expected_features": ["cave-mouth", "surface-break"],
+      "distance_m": 2000,
+      "pose": null,
+      "status": "pending-native-discovery",
+      "qualification": {
+        "wanted_set_sha256": null,
+        "coverage_sha256": null,
+        "tiers": [],
+        "requirements": {"below_horizon_sky_percent_max": 2, "seam_bands": 0, "outer_edge": false, "tiers_complete": true}
+      },
+      "dispositions": {"quality": null, "performance": null}
+    },
+    {
+      "id": "arch-8km",
+      "preset": "caverns",
+      "seed": 424242,
+      "intent": "Natural arch on the caverns preset at 8 km, beyond the 4 km noise-cave cutoff.",
+      "expected_features": ["arch", "cave-opening-beyond-4km"],
+      "distance_m": 8000,
+      "pose": null,
+      "status": "pending-native-discovery",
+      "qualification": {
+        "wanted_set_sha256": null,
+        "coverage_sha256": null,
+        "tiers": [],
+        "requirements": {"below_horizon_sky_percent_max": 2, "seam_bands": 0, "outer_edge": false, "tiers_complete": true}
+      },
+      "dispositions": {"quality": null, "performance": null}
+    },
+    {
+      "id": "horizon-16km",
+      "preset": "default",
+      "seed": 424242,
+      "intent": "Far horizon at 16 km on the default preset; the far ladder must settle with no seam band and no outer edge.",
+      "expected_features": ["far-horizon-ladder", "surface-silhouette"],
+      "distance_m": 16000,
+      "pose": null,
+      "status": "pending-native-discovery",
+      "qualification": {
+        "wanted_set_sha256": null,
+        "coverage_sha256": null,
+        "tiers": [],
+        "requirements": {"below_horizon_sky_percent_max": 2, "seam_bands": 0, "outer_edge": false, "tiers_complete": true}
+      },
+      "dispositions": {"quality": null, "performance": null}
+    }
+  ],
+  "coverage": [
+    {
+      "id": "default",
+      "preset": "default",
+      "seed": 424242,
+      "intent": "Far-horizon smoke row for the default preset (distant-world.md far volume horizon smoke).",
+      "pose": null,
+      "status": "pending-native-discovery",
+      "qualification": {
+        "wanted_set_sha256": null,
+        "coverage_sha256": null,
+        "tiers": [],
+        "requirements": {"below_horizon_sky_percent_max": 2, "seam_bands": 0, "outer_edge": false, "tiers_complete": true}
+      },
+      "dispositions": {"quality": null, "performance": null}
+    },
+    {
+      "id": "mountains",
+      "preset": "mountains",
+      "seed": 424242,
+      "intent": "Far-horizon smoke row for the mountains preset (distant-world.md far volume horizon smoke).",
+      "pose": null,
+      "status": "pending-native-discovery",
+      "qualification": {
+        "wanted_set_sha256": null,
+        "coverage_sha256": null,
+        "tiers": [],
+        "requirements": {"below_horizon_sky_percent_max": 2, "seam_bands": 0, "outer_edge": false, "tiers_complete": true}
+      },
+      "dispositions": {"quality": null, "performance": null}
+    },
+    {
+      "id": "archipelago",
+      "preset": "archipelago",
+      "seed": 424242,
+      "intent": "Far-horizon smoke row for the archipelago preset (distant-world.md far volume horizon smoke).",
+      "pose": null,
+      "status": "pending-native-discovery",
+      "qualification": {
+        "wanted_set_sha256": null,
+        "coverage_sha256": null,
+        "tiers": [],
+        "requirements": {"below_horizon_sky_percent_max": 2, "seam_bands": 0, "outer_edge": false, "tiers_complete": true}
+      },
+      "dispositions": {"quality": null, "performance": null}
+    }
+  ],
+  "controls": [
+    {
+      "id": "empty-tile",
+      "preset": "default",
+      "seed": 424242,
+      "intent": "Valid empty tile control fixture (distant-world.md control fixtures): the wanted set for this tile is empty and the scene must still settle.",
+      "pose": null,
+      "status": "pending-native-discovery",
+      "qualification": {
+        "wanted_set_sha256": null,
+        "coverage_sha256": null,
+        "tiers": [],
+        "requirements": {"below_horizon_sky_percent_max": 2, "seam_bands": 0, "outer_edge": false, "tiers_complete": true}
+      },
+      "dispositions": {"quality": null, "performance": null}
+    },
+    {
+      "id": "cave-opening",
+      "preset": "cave_dense",
+      "seed": 424242,
+      "intent": "Cave opening control fixture (distant-world.md control fixtures): the wanted set must include the known cave opening.",
+      "pose": null,
+      "status": "pending-native-discovery",
+      "qualification": {
+        "wanted_set_sha256": null,
+        "coverage_sha256": null,
+        "tiers": [],
+        "requirements": {"below_horizon_sky_percent_max": 2, "seam_bands": 0, "outer_edge": false, "tiers_complete": true}
+      },
+      "dispositions": {"quality": null, "performance": null}
+    }
+  ],
+  "native": {
+    "commands": "docs/distant-world-scenes.md",
+    "discovery_probe": "docs/distant-world-scenes.md"
+  },
+  "discovery_notes": [
+    "Discovery must also record a cave opening beyond the 4 km noise-cave cutoff (Q-24); the arch-8km and horizon-16km stations are the beyond-4 km cases.",
+    "Poses are supplied only by the native discovery run on the qualified machine; nothing in this file is captured offline.",
+    "The cave-count oracle counts cave openings in a fixed probe window and compares them with caverns; its threshold is recorded here when the native run supplies it."
+  ]
+}
