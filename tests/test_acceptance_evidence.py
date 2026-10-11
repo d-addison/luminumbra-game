@@ -20,9 +20,11 @@ import validate_content  # noqa: E402
 from lumlib.schema import load_json_file  # noqa: E402
 from validators import discover  # noqa: E402
 from validators.acceptance import (  # noqa: E402
+    PRIVATE_EXTENSIONS,
     SCHEMA_ID,
     artifact_count,
     artifact_hashes,
+    marker_problem,
     validate_bundle,
     verify_artifacts,
 )
@@ -42,8 +44,21 @@ ENGINE_REV = "b56cdba12e425ed2786778d5b02c98ba61466584"
 HANG_UNSIGNED = 3489660927
 HANG_SIGNED = -805306369
 
-# Session indexes in make_bundle(): 0 create-world, 7 refusal-bad-save,
-# 8 refusal-bad-switch, 9 preview-launch, 10 restart-no-audio.
+# Private extensions named in the rules before the extension list was extended.
+ORIGINAL_EXTENSIONS = (
+    ".wav", ".ogg", ".flac", ".mp3", ".m4a", ".aac", ".wma",
+    ".dll", ".so", ".exe", ".sav", ".lmc", ".zip",
+)
+ADDED_EXTENSIONS = (
+    ".opus", ".aiff", ".aif", ".wem", ".bank", ".fsb", ".snd", ".mid", ".midi", ".ape",
+    ".mka", ".amr", ".pdb", ".lib", ".a", ".dylib", ".obj", ".o", ".pck", ".sdk",
+    ".p12", ".pfx", ".pem", ".key",
+)
+
+# Session indexes in make_bundle(): 0 create-world, 3 restart-world, 6 switch-world-b,
+# 7 refusal-bad-save, 8 refusal-bad-switch, 9 preview-launch, 10 restart-no-audio.
+RESTART_WORLD = 3
+SWITCH_WORLD_B = 6
 REFUSAL_SAVE = 7
 REFUSAL_SWITCH = 8
 PREVIEW = 9
@@ -107,7 +122,7 @@ def make_bundle():
         "engine": {"rev": ENGINE_REV},
         "game": {"rev": GAME_REV},
         "content": {"packs": [{"id": "base-content", "sha256": _h("pack-base")}]},
-        "policy": {"audio_off_marker": MARKER, "refusal_exit_codes": [2, 3]},
+        "policy": {"refusal_exit_codes": [2, 3]},
         "sessions": [
             _session("create-world", "create", "null", False),
             _session("edit-world", "edit", "null", False),
@@ -117,12 +132,17 @@ def make_bundle():
             _session("switch-world-a", "switch", "null", False),
             _session("switch-world-b", "switch", "null", False),
             _session("refusal-bad-save", "refusal", "null", False, 2,
-                     refusal_code="save-corrupt", saves_unchanged=True),
+                     refusal_code="save-corrupt", saves=["save-refusal"], saves_unchanged=True),
             _session("refusal-bad-switch", "refusal", "null", False, 3,
-                     refusal_code="switch-target-missing", saves_unchanged=True),
+                     refusal_code="switch-target-missing", saves=["switch-refusal"],
+                     saves_unchanged=True),
             _session("preview-launch", "preview", "off", True),
             _session("restart-no-audio", "restart", "off", True),
         ],
+        "startup_checks": {
+            "no_audio_precedence_session": "restart-no-audio",
+            "null_audio_nonzero_master_session": "restart-world",
+        },
         "saves": [
             {
                 "name": "edit-save",
@@ -320,10 +340,17 @@ class SchemaRuleTest(_BundleTest):
         doc["policy"]["refusal_exit_codes"] = [2, 2]
         self.assertProblem(doc, "policy.refusal_exit_codes[1]: duplicate exit code 2")
 
-    def test_audio_marker_must_not_contain_control_characters(self):
+    def test_bundle_cannot_carry_the_audio_off_marker(self):
         doc = self.bundle()
-        doc["policy"]["audio_off_marker"] = "LUM\nOFF"
-        self.assertProblem(doc, "policy.audio_off_marker: must not contain control characters")
+        doc["policy"]["audio_off_marker"] = MARKER
+        self.assertProblem(doc, "policy: unknown key 'audio_off_marker'")
+
+    def test_marker_problem_refuses_empty_control_and_missing_values(self):
+        self.assertIsNone(marker_problem(MARKER))
+        self.assertEqual(marker_problem(""), "must be a non-empty string")
+        self.assertEqual(marker_problem(None), "must be a non-empty string")
+        self.assertEqual(marker_problem("LUM\nOFF"), "must not contain control characters")
+        self.assertEqual(marker_problem("LUM\x7fOFF"), "must not contain control characters")
 
     def test_duplicate_session_id_refused(self):
         doc = self.bundle()
@@ -441,6 +468,88 @@ class AudioRuleTest(_BundleTest):
         self.assertProblem(doc, "sessions[0].audio_mode: must be null or off")
 
 
+class StartupChecksTest(_BundleTest):
+    def test_startup_checks_key_is_required(self):
+        doc = self.bundle()
+        del doc["startup_checks"]
+        self.assertProblem(doc, "bundle: missing key 'startup_checks'")
+
+    def test_startup_checks_unknown_key_refused(self):
+        doc = self.bundle()
+        doc["startup_checks"]["extra"] = "restart-world"
+        self.assertProblem(doc, "startup_checks: unknown key 'extra'")
+
+    def test_startup_checks_missing_key_refused(self):
+        doc = self.bundle()
+        del doc["startup_checks"]["null_audio_nonzero_master_session"]
+        self.assertProblem(doc, "startup_checks: missing key 'null_audio_nonzero_master_session'")
+
+    def test_first_check_must_reference_existing_session(self):
+        doc = self.bundle()
+        doc["startup_checks"]["null_audio_nonzero_master_session"] = "nope"
+        self.assertProblem(doc, "startup_checks.null_audio_nonzero_master_session: unknown session 'nope'")
+
+    def test_second_check_must_reference_existing_session(self):
+        doc = self.bundle()
+        doc["startup_checks"]["no_audio_precedence_session"] = "nope"
+        self.assertProblem(doc, "startup_checks.no_audio_precedence_session: unknown session 'nope'")
+
+    def test_first_check_with_zero_master_refused(self):
+        doc = self.bundle()
+        doc["sessions"][RESTART_WORLD]["saved_master"] = 0
+        self.assertProblem(
+            doc,
+            "startup_checks.null_audio_nonzero_master_session: session 'restart-world' must have "
+            "audio_mode null, no_audio_flag false and saved_master above zero",
+        )
+
+    def test_first_check_pointing_at_audio_off_session_refused(self):
+        doc = self.bundle()
+        doc["startup_checks"]["null_audio_nonzero_master_session"] = "restart-no-audio"
+        self.assertProblem(
+            doc,
+            "startup_checks.null_audio_nonzero_master_session: session 'restart-no-audio' must have "
+            "audio_mode null",
+        )
+
+    def test_second_check_with_wrong_audio_mode_refused(self):
+        doc = self.bundle()
+        doc["sessions"][NO_AUDIO_RESTART]["audio_mode"] = "null"
+        self.assertProblem(
+            doc,
+            "startup_checks.no_audio_precedence_session: session 'restart-no-audio' must have "
+            "audio_mode off and no_audio_flag true",
+        )
+
+    def test_second_check_without_flag_refused(self):
+        doc = self.bundle()
+        doc["sessions"][NO_AUDIO_RESTART]["no_audio_flag"] = False
+        self.assertProblem(
+            doc,
+            "startup_checks.no_audio_precedence_session: session 'restart-no-audio' must have "
+            "audio_mode off and no_audio_flag true",
+        )
+
+    def test_second_check_must_be_restart_or_load(self):
+        doc = self.bundle()
+        doc["sessions"][NO_AUDIO_RESTART]["kind"] = "save"
+        self.assertProblem(
+            doc,
+            "startup_checks.no_audio_precedence_session: session 'restart-no-audio' must be a restart or load session",
+        )
+
+    def test_load_is_an_accepted_second_check_kind(self):
+        doc = self.bundle()
+        doc["sessions"][NO_AUDIO_RESTART]["kind"] = "load"
+        self.assertNoProblem(doc, "startup_checks", release=True)
+
+    def test_fewer_than_two_switch_sessions_refused(self):
+        doc = self.bundle()
+        del doc["sessions"][SWITCH_WORLD_B]
+        self.assertProblem(doc, "sessions: at least 2 sessions of kind 'switch' are required, found 1")
+        self.assertNoProblem(doc, "missing session kind 'switch'")
+
+
 class SessionCoverageTest(_BundleTest):
     def test_missing_session_kind_refused(self):
         doc = self.bundle()
@@ -464,6 +573,50 @@ class SessionCoverageTest(_BundleTest):
         self.assertProblem(doc, "sessions[8].refusal_code: must be a non-empty string")
 
 
+class RefusalSaveTest(_BundleTest):
+    def test_refusal_session_without_saves_refused(self):
+        doc = self.bundle()
+        del doc["sessions"][REFUSAL_SAVE]["saves"]
+        self.assertProblem(doc, "sessions[7]: missing key 'saves'")
+
+    def test_refusal_saves_must_not_be_empty(self):
+        doc = self.bundle()
+        doc["sessions"][REFUSAL_SAVE]["saves"] = []
+        self.assertProblem(doc, "sessions[7].saves: needs at least 1 item(s)")
+
+    def test_unknown_save_name_refused(self):
+        doc = self.bundle()
+        doc["sessions"][REFUSAL_SAVE]["saves"] = ["nope"]
+        self.assertProblem(doc, "sessions[7].saves[0]: unknown save 'nope'")
+
+    def test_duplicate_save_name_in_session_refused(self):
+        doc = self.bundle()
+        doc["sessions"][REFUSAL_SAVE]["saves"] = ["save-refusal", "save-refusal"]
+        self.assertProblem(doc, "sessions[7].saves[1]: duplicate save 'save-refusal' in this session")
+
+    def test_referenced_save_with_changed_hash_refused(self):
+        doc = self.bundle()
+        doc["saves"][1]["files"][0]["sha256_after"] = _h("manifest-start")
+        self.assertProblem(
+            doc, "sessions[7].saves[0]: referenced save 'save-refusal' changed file 'world/manifest.txt'"
+        )
+
+    def test_non_refusal_session_carrying_saves_refused(self):
+        doc = self.bundle()
+        doc["sessions"][0]["saves"] = ["save-refusal"]
+        self.assertProblem(doc, "sessions[0]: unknown key 'saves'")
+
+    def test_save_name_suffix_no_longer_decides_refusal(self):
+        doc = self.bundle()
+        doc["saves"].append({
+            "name": "stray-refusal",
+            "files": [{"path": "world/stray.txt",
+                       "sha256_before": _h("manifest-start"),
+                       "sha256_after": _h("manifest-edited")}],
+        })
+        self.assertClean(doc)
+
+
 class SaveRuleTest(_BundleTest):
     def test_no_edited_save_refused(self):
         doc = self.bundle()
@@ -471,11 +624,6 @@ class SaveRuleTest(_BundleTest):
             for entry in save["files"]:
                 entry["sha256_after"] = entry["sha256_before"]
         self.assertProblem(doc, "saves: no save has an edited file")
-
-    def test_refusal_save_must_leave_files_unchanged(self):
-        doc = self.bundle()
-        doc["saves"][1]["files"][0]["sha256_after"] = _h("manifest-start")
-        self.assertProblem(doc, "saves[1].files[0]: a refusal save must leave every file unchanged")
 
     def test_portable_relative_paths_only(self):
         for bad in ("/abs/manifest.txt", "world\\manifest.txt", "../manifest.txt",
@@ -725,11 +873,21 @@ class PrivateMaterialTest(_BundleTest):
         self.assertProblem(doc, "saves[0].files[0].path: private file extension '.sav'")
 
     def test_every_private_extension_is_refused(self):
-        for extension in (".wav", ".ogg", ".flac", ".mp3", ".m4a", ".aac", ".wma",
-                          ".dll", ".so", ".exe", ".sav", ".lmc", ".zip"):
-            doc = self.bundle()
-            doc["historical"][0]["disposition"] = "item" + extension
-            self.assertProblem(doc, "private file extension '%s'" % extension)
+        for extension in ORIGINAL_EXTENSIONS + ADDED_EXTENSIONS:
+            with self.subTest(extension=extension):
+                doc = self.bundle()
+                doc["historical"][0]["disposition"] = "item" + extension
+                self.assertProblem(doc, "private file extension '%s'" % extension)
+
+    def test_private_extension_list_includes_every_named_extension(self):
+        self.assertTrue(set(ORIGINAL_EXTENSIONS + ADDED_EXTENSIONS) <= set(PRIVATE_EXTENSIONS))
+
+    def test_private_extensions_are_case_insensitive(self):
+        for extension in (".WAV", ".Opus", ".PEM", ".Key"):
+            with self.subTest(extension=extension):
+                doc = self.bundle()
+                doc["historical"][0]["disposition"] = "item" + extension
+                self.assertProblem(doc, "private file extension '%s'" % extension.lower())
 
     def test_drive_path_string_refused(self):
         doc = self.bundle()
@@ -752,6 +910,21 @@ class PrivateMaterialTest(_BundleTest):
                 doc = self.bundle()
                 doc["historical"][0]["disposition"] = "log at " + bad
                 self.assertProblem(doc, "historical[0].disposition: local absolute path shape is not allowed")
+
+    def test_unc_and_device_paths_refused(self):
+        for bad in ("\\\\server\\share\\x", "\\\\?\\C:\\x", "//server/share/x"):
+            for value in (bad, "log at " + bad):
+                with self.subTest(value=value):
+                    doc = self.bundle()
+                    doc["historical"][0]["disposition"] = value
+                    self.assertProblem(doc, "historical[0].disposition: local absolute path shape is not allowed")
+
+    def test_url_with_host_and_path_is_allowed(self):
+        for value in ("https://host/path", "see https://host/path"):
+            with self.subTest(value=value):
+                doc = self.bundle()
+                doc["historical"][0]["disposition"] = value
+                self.assertNoProblem(doc, "local absolute path shape")
 
     def test_url_is_not_a_drive_path(self):
         doc = self.bundle()
@@ -795,14 +968,14 @@ class ArtifactRootTest(unittest.TestCase):
     def test_success_when_every_artifact_present_and_hashed(self):
         doc = make_bundle()
         _store(self.store)
-        self.assertEqual(verify_artifacts(doc, str(self.store)), [])
+        self.assertEqual(verify_artifacts(doc, str(self.store), MARKER), [])
         self.assertEqual(artifact_count(doc), len({d for d, _ in artifact_hashes(doc)}))
         self.assertIn((_h("pack-base"), "content.packs[0].sha256"), artifact_hashes(doc))
 
     def test_missing_pack_artifact_reported_with_location(self):
         doc = make_bundle()
         _store(self.store, skip=frozenset([_h("pack-base")]))
-        problems = verify_artifacts(doc, str(self.store))
+        problems = verify_artifacts(doc, str(self.store), MARKER)
         self.assertEqual(
             problems,
             ["content.packs[0].sha256: artifact %s missing" % _h("pack-base")],
@@ -813,13 +986,13 @@ class ArtifactRootTest(unittest.TestCase):
         _store(self.store)
         digest = _h("pack-base")
         (self.store / "sha256" / digest).write_bytes(b"tampered pack\n")
-        problems = verify_artifacts(doc, str(self.store))
+        problems = verify_artifacts(doc, str(self.store), MARKER)
         self.assertEqual(problems, ["content.packs[0].sha256: artifact %s mismatch" % digest])
 
     def test_missing_artifact_reported_with_location(self):
         doc = make_bundle()
         _store(self.store, skip=frozenset([_h("command-create-world")]))
-        problems = verify_artifacts(doc, str(self.store))
+        problems = verify_artifacts(doc, str(self.store), MARKER)
         self.assertEqual(
             problems,
             ["sessions[0].command_sha256: artifact %s missing" % _h("command-create-world")],
@@ -830,7 +1003,7 @@ class ArtifactRootTest(unittest.TestCase):
         _store(self.store)
         digest = _h("archive")
         (self.store / "sha256" / digest).write_bytes(b"tampered\n")
-        problems = verify_artifacts(doc, str(self.store))
+        problems = verify_artifacts(doc, str(self.store), MARKER)
         self.assertEqual(problems, ["package.archive_sha256: artifact %s mismatch" % digest])
 
     def test_audio_off_journal_without_marker_reported(self):
@@ -841,14 +1014,34 @@ class ArtifactRootTest(unittest.TestCase):
         doc["sessions"][PREVIEW]["journal_sha256"] = digest
         (self.store / "sha256").mkdir(parents=True, exist_ok=True)
         (self.store / "sha256" / digest).write_bytes(plain)
-        problems = verify_artifacts(doc, str(self.store))
+        problems = verify_artifacts(doc, str(self.store), MARKER)
         self.assertEqual(
             problems,
             ["sessions[9].journal_sha256: audio-off journal lacks the audio-off marker"],
         )
 
+    def test_journals_must_carry_the_operator_marker(self):
+        doc = make_bundle()
+        _store(self.store)
+        problems = verify_artifacts(doc, str(self.store), "OTHER-MARKER")
+        self.assertEqual(
+            problems,
+            [
+                "sessions[9].journal_sha256: audio-off journal lacks the audio-off marker",
+                "sessions[10].journal_sha256: audio-off journal lacks the audio-off marker",
+            ],
+        )
+
+    def test_empty_marker_is_refused_by_verify(self):
+        doc = make_bundle()
+        _store(self.store)
+        self.assertEqual(
+            verify_artifacts(doc, str(self.store), ""),
+            ["audio-off marker: must be a non-empty string"],
+        )
+
     def test_missing_artifact_root_reported(self):
-        problems = verify_artifacts(make_bundle(), str(self.root / "absent"))
+        problems = verify_artifacts(make_bundle(), str(self.root / "absent"), MARKER)
         self.assertEqual(len(problems), 1)
         self.assertIn("artifact root is not a directory", problems[0])
 
@@ -906,6 +1099,43 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("one of --structure-only or --artifact-root DIR is required", err)
 
+    def test_artifact_root_requires_audio_off_marker(self):
+        _write_bundle(self.bundle, make_bundle())
+        _store(self.store)
+        code, _out, err = _run_cli([str(self.bundle), "--artifact-root", str(self.store)])
+        self.assertEqual(code, 2)
+        self.assertIn("--artifact-root requires --audio-off-marker", err)
+
+    def test_audio_off_marker_with_structure_only_is_usage_error(self):
+        _write_bundle(self.bundle, make_bundle())
+        code, _out, err = _run_cli([str(self.bundle), "--structure-only", "--audio-off-marker", MARKER])
+        self.assertEqual(code, 2)
+        self.assertIn("--audio-off-marker is not used with --structure-only", err)
+
+    def test_audio_off_marker_with_control_character_is_usage_error(self):
+        _write_bundle(self.bundle, make_bundle())
+        _store(self.store)
+        code, _out, err = _run_cli([str(self.bundle), "--artifact-root", str(self.store),
+                                    "--audio-off-marker", "LUM\nOFF"])
+        self.assertEqual(code, 2)
+        self.assertIn("--audio-off-marker: must not contain control characters", err)
+
+    def test_empty_audio_off_marker_is_usage_error(self):
+        _write_bundle(self.bundle, make_bundle())
+        _store(self.store)
+        code, _out, err = _run_cli([str(self.bundle), "--artifact-root", str(self.store),
+                                    "--audio-off-marker", ""])
+        self.assertEqual(code, 2)
+        self.assertIn("--audio-off-marker: must be a non-empty string", err)
+
+    def test_bundle_carrying_marker_is_refused_by_structure_check(self):
+        doc = make_bundle()
+        doc["policy"]["audio_off_marker"] = MARKER
+        _write_bundle(self.bundle, doc)
+        code, out, _err = _run_cli([str(self.bundle), "--structure-only"])
+        self.assertEqual(code, 1)
+        self.assertEqual(out.splitlines(), ["policy: unknown key 'audio_off_marker'"])
+
     def test_structure_only_prints_final_line(self):
         code, out, _err = _run_cli([str(FIXTURES / "valid.json"), "--structure-only"])
         self.assertEqual(code, 0)
@@ -936,7 +1166,8 @@ class CliTest(unittest.TestCase):
         doc["scenes"][2]["defects"].append({"id": "lod-pop", "disposition": "open", "note": ""})
         _write_bundle(self.bundle, doc)
         _store(self.store)
-        code, out, _err = _run_cli([str(self.bundle), "--artifact-root", str(self.store), "--release"])
+        code, out, _err = _run_cli([str(self.bundle), "--artifact-root", str(self.store),
+                                    "--audio-off-marker", MARKER, "--release"])
         self.assertEqual(code, 1)
         self.assertIn("open defect is refused in release mode", out)
 
@@ -944,21 +1175,24 @@ class CliTest(unittest.TestCase):
         doc = make_bundle()
         _write_bundle(self.bundle, doc)
         _store(self.store)
-        code, out, _err = _run_cli([str(self.bundle), "--artifact-root", str(self.store)])
+        code, out, _err = _run_cli([str(self.bundle), "--artifact-root", str(self.store),
+                                    "--audio-off-marker", MARKER])
         self.assertEqual(code, 0)
         self.assertEqual(out.splitlines(), ["artifacts verified: %d" % artifact_count(doc)])
 
     def test_artifact_root_release_success(self):
         _write_bundle(self.bundle, make_bundle())
         _store(self.store)
-        code, out, _err = _run_cli([str(self.bundle), "--artifact-root", str(self.store), "--release"])
+        code, out, _err = _run_cli([str(self.bundle), "--artifact-root", str(self.store),
+                                    "--audio-off-marker", MARKER, "--release"])
         self.assertEqual(code, 0)
         self.assertTrue(out.startswith("artifacts verified: "), out)
 
     def test_missing_artifact_is_reported(self):
         _write_bundle(self.bundle, make_bundle())
         _store(self.store, skip=frozenset([_h("archive")]))
-        code, out, _err = _run_cli([str(self.bundle), "--artifact-root", str(self.store)])
+        code, out, _err = _run_cli([str(self.bundle), "--artifact-root", str(self.store),
+                                    "--audio-off-marker", MARKER])
         self.assertEqual(code, 1)
         self.assertEqual(out.splitlines(), ["package.archive_sha256: artifact %s missing" % _h("archive")])
 
@@ -966,7 +1200,8 @@ class CliTest(unittest.TestCase):
         _write_bundle(self.bundle, make_bundle())
         _store(self.store)
         (self.store / "sha256" / _h("archive")).write_bytes(b"other\n")
-        code, out, _err = _run_cli([str(self.bundle), "--artifact-root", str(self.store)])
+        code, out, _err = _run_cli([str(self.bundle), "--artifact-root", str(self.store),
+                                    "--audio-off-marker", MARKER])
         self.assertEqual(code, 1)
         self.assertIn("artifact %s mismatch" % _h("archive"), out)
 
@@ -978,7 +1213,8 @@ class CliTest(unittest.TestCase):
         _write_bundle(self.bundle, doc)
         _store(self.store)
         (self.store / "sha256" / digest).write_bytes(plain)
-        code, out, _err = _run_cli([str(self.bundle), "--artifact-root", str(self.store)])
+        code, out, _err = _run_cli([str(self.bundle), "--artifact-root", str(self.store),
+                                    "--audio-off-marker", MARKER])
         self.assertEqual(code, 1)
         self.assertIn("audio-off journal lacks the audio-off marker", out)
 
@@ -1010,7 +1246,7 @@ class FixtureTest(unittest.TestCase):
         ("invalid-audio-off-without-flag.json", False, "sessions[0]: audio_mode off requires no_audio_flag true", False),
         ("invalid-preview-audio.json", False, "preview requires audio_mode off", False),
         ("invalid-missing-session-kind.json", False, "missing session kind 'switch'", False),
-        ("invalid-refusal-saves-changed.json", False, "saves_unchanged: must be true", False),
+        ("invalid-refusal-saves-changed.json", False, "changed file", False),
         ("invalid-no-edited-save.json", False, "saves: no save has an edited file", False),
         ("invalid-scene-unsettled.json", False, "scenes[0].settled: must be true", False),
         ("invalid-open-defect.json", True, "open defect is refused in release mode", True),

@@ -50,7 +50,6 @@
     "git_sha": "3f9d2c1a8b7e6d5c4b3a2f1e0d9c8b7a6f5e4d3c"
   },
   "policy": {
-    "audio_off_marker": "LUM-AUDIO-OFF-0x1",
     "refusal_exit_codes": [
       2,
       3
@@ -76,7 +75,7 @@
       "files": [
         {
           "path": "world/manifest.txt",
-          "sha256_after": "2b57d855e22d2571dd5c4011d3449b64f11a0d2403631bed0d8066bdb8873f62",
+          "sha256_after": "0000000000000000000000000000000000000000000000000000000000000000",
           "sha256_before": "2b57d855e22d2571dd5c4011d3449b64f11a0d2403631bed0d8066bdb8873f62"
         }
       ],
@@ -225,7 +224,10 @@
       "no_audio_flag": false,
       "refusal_code": "save-corrupt",
       "saved_master": 75,
-      "saves_unchanged": false
+      "saves": [
+        "save-refusal"
+      ],
+      "saves_unchanged": true
     },
     {
       "audio_mode": "null",
@@ -237,6 +239,9 @@
       "no_audio_flag": false,
       "refusal_code": "switch-target-missing",
       "saved_master": 75,
+      "saves": [
+        "switch-refusal"
+      ],
       "saves_unchanged": true
     },
     {
@@ -260,5 +265,9 @@
       "saved_master": 75
     }
   ],
+  "startup_checks": {
+    "no_audio_precedence_session": "restart-no-audio",
+    "null_audio_nonzero_master_session": "restart-world"
+  },
   "unresolved_diagnostics": []
 }

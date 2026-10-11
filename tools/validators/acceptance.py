@@ -5,9 +5,11 @@ whole-document scan for private material. With release=True it also refuses
 open defects and open blocking limitations. artifact_hashes lists the hashes a
 bundle names, and verify_artifacts reads the content-addressed store
 DIR/sha256/<hex>, recomputes every hash, and checks that audio-off session
-journals contain the policy marker.
+journals contain the audio-off marker the operator supplies.
 
-The bundle stores hashes and counts only; the store holds the artifacts.
+The bundle stores hashes and counts only; the store holds the artifacts. The
+audio-off marker is not part of the bundle: a bundle cannot vouch for its own
+audio-off proof, so the marker comes from the operator on the command line.
 Problems are strings of the form "PATH: reason", where PATH is a json-path
 style location such as sessions[2].exit_code.
 
@@ -27,6 +29,7 @@ from validate_public_tree import ABSOLUTE_PATH_PATTERNS
 SCHEMA_ID = "luminumbra.game.acceptance-evidence.v1"
 HANG_EXIT_CODE = 0xCFFFFFFF
 MIN_SCENES = 6
+MIN_SWITCH_SESSIONS = 2
 MAX_NOTE_LENGTH = 200
 SESSION_KINDS = ("create", "edit", "save", "restart", "load", "switch", "refusal", "preview")
 AUDIO_MODES = ("null", "off")
@@ -35,14 +38,17 @@ LIMITATION_STATUSES = ("open", "closed")
 HISTORICAL_KIND = "application-hang"
 PRIVATE_EXTENSIONS = (
     ".wav", ".ogg", ".flac", ".mp3", ".m4a", ".aac", ".wma",
-    ".dll", ".so", ".exe", ".sav", ".lmc", ".zip",
+    ".opus", ".aiff", ".aif", ".wem", ".bank", ".fsb", ".snd",
+    ".mid", ".midi", ".ape", ".mka", ".amr",
+    ".dll", ".so", ".dylib", ".exe", ".lib", ".a", ".obj", ".o", ".pdb",
+    ".sav", ".lmc", ".zip", ".pck", ".sdk", ".p12", ".pfx", ".pem", ".key",
 )
 
 ROOT_KEYS = frozenset(
     [
         "schema", "package", "engine", "game", "content", "policy", "sessions", "saves",
         "scenes", "forest", "launcher", "disabled_backend", "limitations", "historical",
-        "unresolved_diagnostics",
+        "startup_checks", "unresolved_diagnostics",
     ]
 )
 SESSION_KEYS = frozenset(
@@ -51,12 +57,16 @@ SESSION_KEYS = frozenset(
         "no_audio_flag", "saved_master",
     ]
 )
-REFUSAL_KEYS = frozenset(["refusal_code", "saves_unchanged"])
+REFUSAL_KEYS = frozenset(["refusal_code", "saves", "saves_unchanged"])
+STARTUP_KEYS = frozenset(["no_audio_precedence_session", "null_audio_nonzero_master_session"])
 
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _HEX40 = re.compile(r"[0-9a-f]{40}")
 _DRIVE_START = re.compile(r"[A-Za-z]:")
 _DRIVE_PATH = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:(?:\\|/)")
+# UNC (\\server\share), device (\\?\C:) and forward-slash UNC (//server/share) paths
+# that start the string or follow whitespace. URLs such as https://host/path do not match.
+_UNC_PATH = re.compile(r"(?:^|(?<=\s))(?:\\\\\?\\|\\\\[^\\\s]+\\|//[^/\\\s]+/)")
 _LOCAL_PATTERNS = (re.compile("/ho" "me/"), re.compile("/Us" "ers/"))
 
 
@@ -151,7 +161,7 @@ def _check_content(problems, value, path):
 
 
 def _check_policy(problems, value, path):
-    if not _keys(problems, value, path, ("audio_off_marker", "refusal_exit_codes")):
+    if not _keys(problems, value, path, ("refusal_exit_codes",)):
         return
     codes_path = _join(path, "refusal_exit_codes")
     if _list(problems, value["refusal_exit_codes"], codes_path, minimum=1):
@@ -164,12 +174,15 @@ def _check_policy(problems, value, path):
                 problems.append("%s: duplicate exit code %d" % (here, code))
             else:
                 seen.add(code)
-    marker = value["audio_off_marker"]
-    marker_path = _join(path, "audio_off_marker")
+
+
+def marker_problem(marker):
+    """Return why an operator audio-off marker is unusable, or None when it is valid."""
     if not isinstance(marker, str) or not marker:
-        problems.append("%s: must be a non-empty string" % marker_path)
-    elif any(ord(char) < 0x20 or ord(char) == 0x7F for char in marker):
-        problems.append("%s: must not contain control characters" % marker_path)
+        return "must be a non-empty string"
+    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in marker):
+        return "must not contain control characters"
+    return None
 
 
 def _refusal_codes(doc):
@@ -178,6 +191,16 @@ def _refusal_codes(doc):
     if not isinstance(codes, list):
         return set()
     return {code for code in codes if _is_int(code)}
+
+
+def _index_by_name(value, key):
+    """Map each dict entry's string ``key`` to the entry; the first occurrence wins."""
+    index = {}
+    if isinstance(value, list):
+        for entry in value:
+            if isinstance(entry, dict) and isinstance(entry.get(key), str):
+                index.setdefault(entry[key], entry)
+    return index
 
 
 def _check_exit_code(problems, session, here, codes):
@@ -204,14 +227,49 @@ def _check_exit_code(problems, session, here, codes):
         )
 
 
-def _check_sessions(problems, value, path, codes):
+def _check_refusal_saves(problems, value, path, saves_by_name):
+    """Each refusal names saves from saves[]; none of their files may change."""
+    if not _list(problems, value, path, minimum=1):
+        return
+    seen = set()
+    for index, name in enumerate(value):
+        here = "%s[%d]" % (path, index)
+        if not isinstance(name, str) or not name:
+            problems.append("%s: must be a non-empty string" % here)
+            continue
+        if name in seen:
+            problems.append("%s: duplicate save '%s' in this session" % (here, name))
+            continue
+        seen.add(name)
+        save = saves_by_name.get(name)
+        if save is None:
+            problems.append("%s: unknown save '%s'" % (here, name))
+            continue
+        files = save.get("files")
+        if not isinstance(files, list):
+            continue
+        for entry in files:
+            if not isinstance(entry, dict):
+                continue
+            before = entry.get("sha256_before")
+            after = entry.get("sha256_after")
+            if isinstance(before, str) and isinstance(after, str) and before != after:
+                problems.append(
+                    "%s: referenced save '%s' changed file '%s'" % (here, name, entry.get("path"))
+                )
+
+
+def _check_sessions(problems, value, path, codes, saves_by_name):
     if not _list(problems, value, path):
         return
     seen = set()
     kinds = set()
+    switches = 0
     for index, session in enumerate(value):
         here = "%s[%d]" % (path, index)
         kind = session.get("kind") if isinstance(session, dict) else None
+        if kind == "switch":
+            switches += 1
         required = SESSION_KEYS | REFUSAL_KEYS if kind == "refusal" else SESSION_KEYS
         if not _keys(problems, session, here, required):
             continue
@@ -246,9 +304,49 @@ def _check_sessions(problems, value, path, codes):
                 problems.append("%s: must be a non-empty string" % _join(here, "refusal_code"))
             if session["saves_unchanged"] is not True:
                 problems.append("%s: must be true" % _join(here, "saves_unchanged"))
+            _check_refusal_saves(problems, session["saves"], _join(here, "saves"), saves_by_name)
     for kind in SESSION_KINDS:
         if kind not in kinds:
             problems.append("%s: missing session kind '%s'" % (_where(path), kind))
+    if switches < MIN_SWITCH_SESSIONS:
+        problems.append(
+            "%s: at least %d sessions of kind 'switch' are required, found %d"
+            % (_where(path), MIN_SWITCH_SESSIONS, switches)
+        )
+
+
+def _check_startup(problems, value, path, sessions_by_id):
+    """The startup checks name existing sessions whose audio state proves the rules."""
+    if not _keys(problems, value, path, STARTUP_KEYS):
+        return
+    first_path = _join(path, "null_audio_nonzero_master_session")
+    first_id = value["null_audio_nonzero_master_session"]
+    first = sessions_by_id.get(first_id) if isinstance(first_id, str) else None
+    if first is None:
+        problems.append("%s: unknown session %r" % (first_path, first_id))
+    elif not (
+        first.get("audio_mode") == "null"
+        and first.get("no_audio_flag") is False
+        and _is_number(first.get("saved_master"))
+        and first["saved_master"] > 0
+    ):
+        problems.append(
+            "%s: session %r must have audio_mode null, no_audio_flag false and saved_master above zero"
+            % (first_path, first_id)
+        )
+
+    second_path = _join(path, "no_audio_precedence_session")
+    second_id = value["no_audio_precedence_session"]
+    second = sessions_by_id.get(second_id) if isinstance(second_id, str) else None
+    if second is None:
+        problems.append("%s: unknown session %r" % (second_path, second_id))
+    elif not (second.get("audio_mode") == "off" and second.get("no_audio_flag") is True):
+        problems.append(
+            "%s: session %r must have audio_mode off and no_audio_flag true"
+            % (second_path, second_id)
+        )
+    elif second.get("kind") not in ("restart", "load"):
+        problems.append("%s: session %r must be a restart or load session" % (second_path, second_id))
 
 
 def _check_portable_path(problems, value, path):
@@ -285,7 +383,6 @@ def _check_saves(problems, value, path):
             problems.append("%s: duplicate save name '%s'" % (_join(here, "name"), name))
         else:
             seen.add(name)
-        refusal = isinstance(name, str) and name.endswith("-refusal")
         files_path = _join(here, "files")
         if not _list(problems, save["files"], files_path, minimum=1):
             continue
@@ -298,10 +395,6 @@ def _check_saves(problems, value, path):
             after_ok = _hex(problems, entry["sha256_after"], _join(entry_here, "sha256_after"))
             if before_ok and after_ok and entry["sha256_before"] != entry["sha256_after"]:
                 edited = True
-                if refusal:
-                    problems.append(
-                        "%s: a refusal save must leave every file unchanged" % entry_here
-                    )
     if not edited:
         problems.append(
             "%s: no save has an edited file (sha256_before differs from sha256_after)"
@@ -427,7 +520,7 @@ def _check_diagnostics(problems, value, path):
 
 
 def _scan_strings(value, path, problems):
-    """Refuse private extensions and local path shapes in every string value."""
+    """Refuse private extensions and local or network path shapes in every string value."""
     if isinstance(value, str):
         lowered = value.lower()
         for extension in PRIVATE_EXTENSIONS:
@@ -437,8 +530,10 @@ def _scan_strings(value, path, problems):
                     % (_where(path), extension)
                 )
                 return
-        if _DRIVE_PATH.search(value) or any(
-            pattern.search(value) for pattern in ABSOLUTE_PATH_PATTERNS + _LOCAL_PATTERNS
+        if (
+            _DRIVE_PATH.search(value)
+            or _UNC_PATH.search(value)
+            or any(pattern.search(value) for pattern in ABSOLUTE_PATH_PATTERNS + _LOCAL_PATTERNS)
         ):
             problems.append("%s: local absolute path shape is not allowed" % _where(path))
     elif isinstance(value, dict):
@@ -461,6 +556,8 @@ def validate_bundle(doc, *, release=False):
     problems = []
     _keys(problems, doc, "", ROOT_KEYS)
     codes = _refusal_codes(doc)
+    saves_by_name = _index_by_name(doc.get("saves"), "name")
+    sessions_by_id = _index_by_name(doc.get("sessions"), "id")
     if "package" in doc:
         _check_package(problems, doc["package"], "package")
     if "engine" in doc:
@@ -472,7 +569,9 @@ def validate_bundle(doc, *, release=False):
     if "policy" in doc:
         _check_policy(problems, doc["policy"], "policy")
     if "sessions" in doc:
-        _check_sessions(problems, doc["sessions"], "sessions", codes)
+        _check_sessions(problems, doc["sessions"], "sessions", codes, saves_by_name)
+    if "startup_checks" in doc:
+        _check_startup(problems, doc["startup_checks"], "startup_checks", sessions_by_id)
     if "saves" in doc:
         _check_saves(problems, doc["saves"], "saves")
     if "scenes" in doc:
@@ -554,20 +653,18 @@ def _file_sha256(path):
     return digest.hexdigest()
 
 
-def _marker(doc):
-    policy = doc.get("policy")
-    marker = policy.get("audio_off_marker") if isinstance(policy, dict) else None
-    return marker if isinstance(marker, str) and marker else None
-
-
-def verify_artifacts(doc, root):
+def verify_artifacts(doc, root, marker):
     """Return problems for the content-addressed store at ROOT (ROOT/sha256/<hex>).
 
     Every artifact the bundle names must exist and hash to its name. Each
-    audio-off session journal must contain the policy marker as UTF-8 bytes.
+    audio-off session journal must contain MARKER, the operator-supplied
+    audio-off marker, as UTF-8 bytes.
     """
     if not os.path.isdir(root):
         return ["%s: artifact root is not a directory" % root]
+    reason = marker_problem(marker)
+    if reason is not None:
+        return ["audio-off marker: %s" % reason]
     problems = []
     status = {}
     for digest, location in artifact_hashes(doc):
@@ -583,23 +680,21 @@ def verify_artifacts(doc, root):
         else:
             status[digest] = True
 
-    marker = _marker(doc)
+    needle = marker.encode("utf-8")
     sessions = doc.get("sessions")
-    if marker is not None and isinstance(sessions, list):
-        needle = marker.encode("utf-8")
-        for index, session in enumerate(sessions):
-            if not isinstance(session, dict) or session.get("audio_mode") != "off":
-                continue
-            journal = session.get("journal_sha256")
-            if not isinstance(journal, str) or status.get(journal) is not True:
-                continue
-            with open(os.path.join(root, "sha256", journal), "rb") as handle:
-                data = handle.read()
-            if needle not in data:
-                problems.append(
-                    "sessions[%d].journal_sha256: audio-off journal lacks the audio-off marker"
-                    % index
-                )
+    for index, session in enumerate(sessions if isinstance(sessions, list) else []):
+        if not isinstance(session, dict) or session.get("audio_mode") != "off":
+            continue
+        journal = session.get("journal_sha256")
+        if not isinstance(journal, str) or status.get(journal) is not True:
+            continue
+        with open(os.path.join(root, "sha256", journal), "rb") as handle:
+            data = handle.read()
+        if needle not in data:
+            problems.append(
+                "sessions[%d].journal_sha256: audio-off journal lacks the audio-off marker"
+                % index
+            )
     return problems
 
 

@@ -3,15 +3,17 @@
 
 Usage:
   python3 -I -B tools/validate_acceptance_evidence.py BUNDLE.json --structure-only
-  python3 -I -B tools/validate_acceptance_evidence.py BUNDLE.json --artifact-root DIR
-  python3 -I -B tools/validate_acceptance_evidence.py BUNDLE.json --artifact-root DIR --release
+  python3 -I -B tools/validate_acceptance_evidence.py BUNDLE.json --artifact-root DIR --audio-off-marker TEXT
+  python3 -I -B tools/validate_acceptance_evidence.py BUNDLE.json --artifact-root DIR --audio-off-marker TEXT --release
 
 Exactly one of --structure-only or --artifact-root DIR is required. --structure-only
 checks the bundle without the artifact store and says so on its last line.
 --artifact-root DIR also recomputes every hash the bundle names against
-DIR/sha256/<hex> and checks the audio-off journal markers. --release adds the
-release gate (open defects and open blocking limitations are refused) and
-requires --artifact-root.
+DIR/sha256/<hex> and checks that each audio-off journal contains the marker the
+operator supplies with --audio-off-marker TEXT. The marker is required with
+--artifact-root and refused with --structure-only. --release adds the release
+gate (open defects and open blocking limitations are refused) and requires
+--artifact-root.
 
 Exit codes: 0 ok, 1 invalid, 2 usage error. Problems are printed one per line
 as PATH: reason, at most 50 lines.
@@ -28,6 +30,7 @@ if _TOOLS_DIR not in sys.path:
 from lumlib.schema import SchemaError, load_json_file  # noqa: E402
 from validators.acceptance import (  # noqa: E402
     artifact_count,
+    marker_problem,
     validate_bundle,
     verify_artifacts,
 )
@@ -53,6 +56,11 @@ def _build_parser():
         help="content-addressed artifact store (DIR/sha256/<hex>) to verify against",
     )
     parser.add_argument(
+        "--audio-off-marker",
+        metavar="TEXT",
+        help="audio-off marker that every audio-off journal must contain; required with --artifact-root",
+    )
+    parser.add_argument(
         "--release",
         action="store_true",
         help="release gate; requires --artifact-root",
@@ -73,6 +81,14 @@ def _run(argv):
         return _usage("--structure-only and --artifact-root are mutually exclusive")
     if not args.structure_only and args.artifact_root is None:
         return _usage("one of --structure-only or --artifact-root DIR is required")
+    if args.structure_only and args.audio_off_marker is not None:
+        return _usage("--audio-off-marker is not used with --structure-only")
+    if args.artifact_root is not None:
+        if args.audio_off_marker is None:
+            return _usage("--artifact-root requires --audio-off-marker")
+        reason = marker_problem(args.audio_off_marker)
+        if reason is not None:
+            return _usage("--audio-off-marker: %s" % reason)
 
     try:
         doc = load_json_file(args.bundle)
@@ -85,7 +101,7 @@ def _run(argv):
 
     problems = validate_bundle(doc, release=args.release)
     if not problems and args.artifact_root is not None:
-        problems = verify_artifacts(doc, args.artifact_root)
+        problems = verify_artifacts(doc, args.artifact_root, args.audio_off_marker)
     if problems:
         for line in problems[:MAX_PROBLEMS]:
             print(line)

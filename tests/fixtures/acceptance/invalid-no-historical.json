@@ -44,7 +44,6 @@
     "git_sha": "3f9d2c1a8b7e6d5c4b3a2f1e0d9c8b7a6f5e4d3c"
   },
   "policy": {
-    "audio_off_marker": "LUM-AUDIO-OFF-0x1",
     "refusal_exit_codes": [
       2,
       3
@@ -219,6 +218,9 @@
       "no_audio_flag": false,
       "refusal_code": "save-corrupt",
       "saved_master": 75,
+      "saves": [
+        "save-refusal"
+      ],
       "saves_unchanged": true
     },
     {
@@ -231,6 +233,9 @@
       "no_audio_flag": false,
       "refusal_code": "switch-target-missing",
       "saved_master": 75,
+      "saves": [
+        "switch-refusal"
+      ],
       "saves_unchanged": true
     },
     {
@@ -254,5 +259,9 @@
       "saved_master": 75
     }
   ],
+  "startup_checks": {
+    "no_audio_precedence_session": "restart-no-audio",
+    "null_audio_nonzero_master_session": "restart-world"
+  },
   "unresolved_diagnostics": []
 }
