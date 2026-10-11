@@ -340,14 +340,14 @@ class EvidenceZoneTest(_ContentTest):
         self.assertIn("docs/evidence/x.json: schema 'luminumbra.nope.v1' is not registered", out.getvalue().splitlines())
 
     def test_deep_json_nesting_reported_and_other_files_still_checked(self):
-        self.write("content/presets/deep.json", b"[" * 2000 + b"]" * 2000)
+        self.write("content/presets/deep.json", b"[" * 200000 + b"]" * 200000)
         self.write("docs/evidence/bad.json", '{"schema": "luminumbra.nope.v1"}\n')
         problems = self.registry_problems()
         self.assertIn("content/presets/deep.json: json nesting is too deep", problems)
         self.assertIn("docs/evidence/bad.json: schema 'luminumbra.nope.v1' is not registered", problems)
 
     def test_deep_json_nesting_in_evidence_reported(self):
-        self.write("docs/evidence/deep.json", b"[" * 2000 + b"]" * 2000)
+        self.write("docs/evidence/deep.json", b"[" * 200000 + b"]" * 200000)
         self.assertEqual(self.registry_problems(), ["docs/evidence/deep.json: json nesting is too deep"])
 
     def test_evidence_symlink_root_is_refused(self):
