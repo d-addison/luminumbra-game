@@ -298,6 +298,30 @@ class SceneSetTests(unittest.TestCase):
         obj["stations"][0]["pose"] = {"x": 1, "y": 2, "z": 3, "yaw": 0, "pitch": 0}
         _assert_problem(self, _set_problems(obj), "pose must be null while status is pending")
 
+    def test_pending_station_with_wanted_hash_refused(self):
+        obj = _scene_set()
+        obj["stations"][0]["qualification"]["wanted_set_sha256"] = "a" * 64
+        _assert_problem(
+            self, _set_problems(obj), "qualification.wanted_set_sha256 must be null while status is pending"
+        )
+
+    def test_pending_control_with_coverage_hash_refused(self):
+        obj = _scene_set()
+        obj["controls"][1]["qualification"]["coverage_sha256"] = "b" * 64
+        _assert_problem(
+            self, _set_problems(obj), "qualification.coverage_sha256 must be null while status is pending"
+        )
+
+    def test_pending_coverage_row_with_tiers_refused(self):
+        obj = _scene_set()
+        obj["coverage"][0]["qualification"]["tiers"] = [{"tier": 0, "complete": True}]
+        _assert_problem(self, _set_problems(obj), "qualification.tiers must be empty while status is pending")
+
+    def test_pending_row_with_disposition_refused(self):
+        obj = _scene_set()
+        obj["controls"][0]["dispositions"]["quality"] = {"verdict": "accepted", "note": "premature"}
+        _assert_problem(self, _set_problems(obj), "dispositions.quality must be null while status is pending")
+
     def test_discovered_top_level_with_pending_row_refused(self):
         obj = _scene_set()
         obj["status"] = "discovered"
@@ -545,7 +569,7 @@ class PresetTests(unittest.TestCase):
 
     def test_missing_features_refused_for_cave_dense(self):
         text = self._edited(lambda obj: obj["generation_params"].pop("features"))
-        _assert_problem(self, self._check(text), "generation_params is missing key 'features'")
+        _assert_problem(self, self._check(text), "generation_params.features is required")
 
     def test_missing_cave_dense_feature_refused(self):
         text = self._edited(lambda obj: obj["generation_params"]["features"].pop("cave_threshold"))
@@ -594,18 +618,80 @@ class PresetTests(unittest.TestCase):
 
     def test_unknown_nested_key_refused_for_any_preset(self):
         text = self._ghost_text({"terrain": {"extra": 1}})
-        problems = scene.check_preset_file("content/presets/ghost.json", text, _ctx())
-        _assert_problem(self, problems, "generation_params.terrain has unknown key 'extra'")
+        _assert_problem(self, self._ghost_problems(text), "generation_params.terrain has unknown key 'extra'")
 
     def test_unknown_generation_params_key_refused_for_any_preset(self):
         text = self._ghost_text({"extra": 1})
-        problems = scene.check_preset_file("content/presets/ghost.json", text, _ctx())
-        _assert_problem(self, problems, "generation_params has unknown key 'extra'")
+        _assert_problem(self, self._ghost_problems(text), "generation_params has unknown key 'extra'")
 
     def test_wrong_leaf_type_refused_for_any_preset(self):
         text = self._ghost_text({"features": {"cave_frequency": "0.02"}})
-        problems = scene.check_preset_file("content/presets/ghost.json", text, _ctx())
-        _assert_problem(self, problems, "generation_params.features.cave_frequency must be a number")
+        _assert_problem(self, self._ghost_problems(text), "generation_params.features.cave_frequency must be a number")
+
+    def test_empty_terrain_object_refused_for_any_preset(self):
+        text = self._raw_ghost_text({"terrain": {}})
+        _assert_problem(self, self._ghost_problems(text), "generation_params.terrain.base_frequency is required")
+
+    def test_each_mandatory_terrain_key_missing_refused_for_any_preset(self):
+        for key in scene.MANDATORY_TERRAIN_KEYS:
+            with self.subTest(key=key):
+                params = _minimal_params()
+                del params["terrain"][key]
+                text = self._raw_ghost_text(params)
+                _assert_problem(
+                    self, self._ghost_problems(text), "generation_params.terrain.%s is required" % key
+                )
+
+    def test_each_mandatory_feature_key_missing_refused_for_any_preset(self):
+        for key in scene.MANDATORY_FEATURE_KEYS:
+            with self.subTest(key=key):
+                params = _minimal_params()
+                del params["features"][key]
+                text = self._raw_ghost_text(params)
+                _assert_problem(
+                    self, self._ghost_problems(text), "generation_params.features.%s is required" % key
+                )
+
+    def test_missing_terrain_object_refused_for_any_preset(self):
+        params = _minimal_params()
+        del params["terrain"]
+        _assert_problem(
+            self, self._ghost_problems(self._raw_ghost_text(params)), "generation_params.terrain is required"
+        )
+
+    def test_missing_features_object_refused_for_any_preset(self):
+        params = _minimal_params()
+        del params["features"]
+        _assert_problem(
+            self, self._ghost_problems(self._raw_ghost_text(params)), "generation_params.features is required"
+        )
+
+    def test_mandatory_keys_present_passes_structure_for_any_preset(self):
+        problems = self._ghost_problems(self._raw_ghost_text(_minimal_params()))
+        self.assertFalse([p for p in problems if "is required" in p])
+
+    def test_radius_clamp_refused_when_cell_size_omitted_for_any_preset(self):
+        text = self._ghost_text({"features": {"max_feature_radius": 128.0}})
+        _assert_problem(
+            self, self._ghost_problems(text), "max_feature_radius must be less than feature_cell_size"
+        )
+
+    def test_radius_clamp_refused_when_radius_omitted_for_any_preset(self):
+        text = self._ghost_text({"features": {"feature_cell_size": 50.0}})
+        _assert_problem(
+            self, self._ghost_problems(text), "max_feature_radius must be less than feature_cell_size"
+        )
+
+    def test_radius_clamp_refused_after_float32_rounding(self):
+        text = self._ghost_text({"features": {"feature_cell_size": 110.0, "max_feature_radius": 110.0000001}})
+        _assert_problem(
+            self, self._ghost_problems(text), "max_feature_radius must be less than feature_cell_size"
+        )
+
+    def test_radius_clamp_passes_when_effective_values_fit(self):
+        text = self._ghost_text({"features": {"feature_cell_size": 128.0}})
+        problems = self._ghost_problems(text)
+        self.assertFalse([p for p in problems if "less than feature_cell_size" in p])
 
     def test_engine_fixtures_validate_as_presets(self):
         for name, fixture in (("caverns", _CAVERNS_FIXTURE), ("default", _DEFAULT_FIXTURE)):
@@ -625,9 +711,22 @@ class PresetTests(unittest.TestCase):
         text = "[" * 200000 + "]" * 200000
         self.assertEqual(self._check(text, _SIDECAR_PATH), ["content/presets/cave_dense.identity.json: json nesting is too deep"])
 
-    def _ghost_text(self, generation_params):
+    def _raw_ghost_text(self, generation_params):
         obj = {"name": "Ghost", "description": "A test preset", "schema_rev": 6, "generation_params": generation_params}
         return json.dumps(obj, indent=2) + "\n"
+
+    def _ghost_text(self, overrides):
+        """A non-cave_dense preset that has every mandatory key, with OVERRIDES merged over it."""
+        params = _minimal_params()
+        for key, value in overrides.items():
+            if isinstance(value, dict) and isinstance(params.get(key), dict):
+                params[key].update(value)
+            else:
+                params[key] = value
+        return self._raw_ghost_text(params)
+
+    def _ghost_problems(self, text):
+        return scene.check_preset_file("content/presets/ghost.json", text, _ctx())
 
     def _fixture_root(self, name, fixture):
         """A temporary root holding FIXTURE as content/presets/NAME.json with a matching sidecar."""
@@ -645,6 +744,21 @@ class PresetTests(unittest.TestCase):
         }
         (presets / (name + ".identity.json")).write_bytes((json.dumps(sidecar, indent=2) + "\n").encode("utf-8"))
         return root
+
+
+def _minimal_params():
+    """generation_params with every key the engine loader requires and nothing else."""
+    return {
+        "terrain": {
+            "base_frequency": 0.01,
+            "base_amplitude": 34.0,
+            "octaves": 6,
+            "persistence": 0.5,
+            "lacunarity": 2.0,
+            "height_offset": 5.0,
+        },
+        "features": {"caves_enabled": True, "cave_frequency": 0.02},
+    }
 
 
 def _leaves(obj, prefix=""):

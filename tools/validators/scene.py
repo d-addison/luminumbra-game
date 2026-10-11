@@ -24,6 +24,7 @@ import math
 import os
 import posixpath
 import re
+import struct
 from decimal import Decimal
 
 from lumlib import identity, schema
@@ -39,6 +40,12 @@ ENGINE_PRESETS = frozenset(("default", "caverns", "mountains", "archipelago"))
 CAVE_DENSE = "cave_dense"
 CAVE_DENSE_FEATURES = {"cave_threshold": 0.54, "surface_break_density": 0.55, "max_feature_radius": 52}
 FEATURE_KEYS = ("cave_threshold", "surface_break_density", "max_feature_radius", "feature_cell_size")
+# Engine defaults (systems/SHIELD_WorldSystem.h) used by the loader when an optional key is omitted.
+ENGINE_FEATURE_CELL_SIZE = 128.0
+ENGINE_MAX_FEATURE_RADIUS = 60.0
+# Keys the engine loader (world/TerrainPresetLoader.cpp) refuses a preset without.
+MANDATORY_TERRAIN_KEYS = ("base_frequency", "base_amplitude", "octaves", "persistence", "lacunarity", "height_offset")
+MANDATORY_FEATURE_KEYS = ("caves_enabled", "cave_frequency")
 # Top-level preset keys: the union of the top-level keys of tests/fixtures/engine-caverns-preset.json
 # and tests/fixtures/engine-default-preset.json. Every preset must have exactly these keys.
 PRESET_KEYS = frozenset(("name", "description", "schema_rev", "generation_params"))
@@ -381,6 +388,32 @@ def _text_rules(where, text):
         _fail(where, "CR is not allowed; use LF newlines")
 
 
+def _as_float32(value, path):
+    """Round VALUE through float32 the way the engine stores it; out-of-range values are refused."""
+    try:
+        return struct.unpack("<f", struct.pack("<f", float(value)))[0]
+    except OverflowError:
+        _fail(path, "generation_params.features value %s is out of float32 range" % value)
+
+
+def _check_mandatory(path, params):
+    """Refuse a preset the engine loader rejects: the terrain and features objects and their required keys."""
+    if "terrain" not in params:
+        _fail(path, "generation_params.terrain is required")
+    if not isinstance(params["terrain"], dict):
+        _fail(path, "generation_params.terrain must be an object")
+    for key in MANDATORY_TERRAIN_KEYS:
+        if key not in params["terrain"]:
+            _fail(path, "generation_params.terrain.%s is required" % key)
+    if "features" not in params:
+        _fail(path, "generation_params.features is required")
+    if not isinstance(params["features"], dict):
+        _fail(path, "generation_params.features must be an object")
+    for key in MANDATORY_FEATURE_KEYS:
+        if key not in params["features"]:
+            _fail(path, "generation_params.features.%s is required" % key)
+
+
 def _check_features(path, name, features):
     label = "generation_params.features"
     if not isinstance(features, dict):
@@ -398,12 +431,15 @@ def _check_features(path, name, features):
     density = features.get("surface_break_density")
     if density is not None and not 0 <= density <= 1:
         _fail(path, "%s.surface_break_density must be in [0, 1]" % label)
-    radius = features.get("max_feature_radius")
-    cell = features.get("feature_cell_size")
-    if radius is not None and cell is not None and not radius < cell:
+    # The loader clamps when the effective radius is not below the effective cell size, after
+    # the values are stored as float32. Omitted keys take the engine defaults.
+    radius = _as_float32(features.get("max_feature_radius", ENGINE_MAX_FEATURE_RADIUS), path)
+    cell = _as_float32(features.get("feature_cell_size", ENGINE_FEATURE_CELL_SIZE), path)
+    if not radius < cell:
         _fail(
             path,
-            "%s.max_feature_radius must be less than feature_cell_size (the loader clamps otherwise)" % label,
+            "%s.max_feature_radius must be less than feature_cell_size (effective values after engine "
+            "defaults and float32 conversion; the loader clamps otherwise)" % label,
         )
     if name == CAVE_DENSE:
         for key, expected in CAVE_DENSE_FEATURES.items():
@@ -482,8 +518,8 @@ def _check_preset(path, text, ctx):
     params = obj["generation_params"]
     if not isinstance(params, dict) or not params:
         _fail(path, "generation_params must be a non-empty object")
-    if "features" in params:
-        _check_features(path, name, params["features"])
+    _check_mandatory(path, params)
+    _check_features(path, name, params["features"])
     _check_shape(path, "generation_params", params, PRESET_SHAPE)
     if name == CAVE_DENSE:
         _check_cave_dense_keys(path, params)
@@ -640,7 +676,22 @@ def _check_row(where, row, keys, row_id, preset, ctx):
     _check_pose(where, row["pose"], row["status"])
     _check_qualification(where, row["qualification"])
     _check_dispositions(where, row["dispositions"])
+    if row["status"] == STATUS_PENDING:
+        _check_pending_evidence(where, row)
     return row["status"]
+
+
+def _check_pending_evidence(where, row):
+    """A pending row carries no native evidence: null hashes, no tiers, null dispositions."""
+    qualification = row["qualification"]
+    for key in ("wanted_set_sha256", "coverage_sha256"):
+        if qualification[key] is not None:
+            _fail(where, "qualification.%s must be null while status is pending-native-discovery" % key)
+    if qualification["tiers"]:
+        _fail(where, "qualification.tiers must be empty while status is pending-native-discovery")
+    for profile in PROFILES:
+        if row["dispositions"][profile] is not None:
+            _fail(where, "dispositions.%s must be null while status is pending-native-discovery" % profile)
 
 
 def _check_station(where, row, spec, ctx):

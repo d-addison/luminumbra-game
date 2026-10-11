@@ -39,6 +39,21 @@ def _write(path, text):
     Path(path).write_bytes(text.encode("utf-8"))
 
 
+def _minimal_params():
+    """generation_params with every key the engine loader requires and nothing else."""
+    return {
+        "terrain": {
+            "base_frequency": 0.01,
+            "base_amplitude": 34.0,
+            "octaves": 6,
+            "persistence": 0.5,
+            "lacunarity": 2.0,
+            "height_offset": 5.0,
+        },
+        "features": {"caves_enabled": True, "cave_frequency": 0.02},
+    }
+
+
 def _symlinks_supported():
     with tempfile.TemporaryDirectory() as probe:
         target = os.path.join(probe, "target")
@@ -259,12 +274,37 @@ class ExportTests(unittest.TestCase):
         return root
 
     def test_non_cave_dense_preset_with_unknown_params_blocks_export(self):
-        root = self._ghost_root({"extra": 1})
+        params = _minimal_params()
+        params["extra"] = 1
+        root = self._ghost_root(params)
         out_dir = self.tmp / "ghost-out"
         code, out, _ = _run(["--root", str(root), "--out", str(out_dir)])
         self.assertEqual(code, 1)
         self.assertIn("content/presets/ghost.json: generation_params has unknown key 'extra'", out.splitlines())
         self.assertFalse(out_dir.exists())
+
+    def test_empty_terrain_object_blocks_export(self):
+        root = self._ghost_root({"terrain": {}})
+        out_dir = self.tmp / "terrain-out"
+        code, out, _ = _run(["--root", str(root), "--out", str(out_dir)])
+        self.assertEqual(code, 1)
+        self.assertIn(
+            "content/presets/ghost.json: generation_params.terrain.base_frequency is required", out.splitlines()
+        )
+        self.assertFalse(out_dir.exists())
+
+    def test_missing_mandatory_feature_key_blocks_export_and_check(self):
+        params = _minimal_params()
+        del params["features"]["caves_enabled"]
+        root = self._ghost_root(params)
+        engine = self.tmp / "engine-ghost"
+        engine.mkdir()
+        code, out, _ = _run(["--root", str(root), "--check", str(engine)])
+        self.assertEqual(code, 1)
+        self.assertIn(
+            "content/presets/ghost.json: generation_params.features.caves_enabled is required", out.splitlines()
+        )
+        self.assertEqual(list(engine.iterdir()), [])
 
     def test_deep_nesting_in_preset_exits_1_with_one_line_problem(self):
         root = self._content_copy("deep")

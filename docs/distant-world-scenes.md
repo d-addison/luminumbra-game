@@ -50,7 +50,21 @@ is expected is refused.
 
 `cave_dense` must also have exactly the caverns key set at each object path
 it shares with caverns, so a missing key or a key that only the default preset
-has is refused. Other presets may omit keys, because the engine fills them in.
+has is refused. Other presets may omit optional keys: the engine fills those in
+with its own defaults. The keys the engine loader refuses a preset without are
+mandatory for every preset, and the validator refuses a preset missing any of
+them with `PATH: generation_params.<path>.<key> is required`:
+
+- `generation_params.terrain` (object) with the numbers `base_frequency`,
+  `base_amplitude`, `octaves`, `persistence`, `lacunarity` and `height_offset`;
+- `generation_params.features` (object) with the boolean `caves_enabled` and the
+  number `cave_frequency`.
+
+The loader clamps `max_feature_radius` to 0.49 times `feature_cell_size` when the
+radius is not below the cell size. The validator refuses that case instead, using
+the effective values: an omitted `feature_cell_size` is 128 and an omitted
+`max_feature_radius` is 60, both compared after float32 conversion.
+
 A test checks that the real caverns and default fixtures validate clean, and
 another checks that the differences between the preset and the caverns fixture
 are exactly these three values plus `name` and `description`.
@@ -123,8 +137,8 @@ complete, `below_horizon_sky_percent` is at most 2, `seam_bands` is 0, and
 - `--release` also requires native evidence. For every row, both profiles and
   both displays there must be exactly one scene receipt in `content/receipts/`
   with the matching `station`, `profile` and `display`. Each such receipt must
-  be a qualified receipt that passes the receipt rules, with `accepted`
-  disposition. Its `wanted_set_sha256`, `coverage_sha256` and `tiers` must equal
+  be a qualified receipt that passes the receipt rules, whose disposition
+  verdict is `accepted` or `waived-with-reason`. Its `wanted_set_sha256`, `coverage_sha256` and `tiers` must equal
   the row's recorded values. Missing, duplicate and inconsistent receipts are
   refused. The `scene_identity` of a profile must be the same on both of its
   displays and must differ between `quality` and `performance` for the same row.
