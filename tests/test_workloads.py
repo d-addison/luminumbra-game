@@ -702,6 +702,18 @@ class DurationToleranceTests(unittest.TestCase):
             problems = _problems(obj, stem="cave-walk", allow_pending=True)
             self.assertFalse(any("tick_rate must be an integer" in p for p in problems), problems)
 
+    def test_exact_inside_but_float_outside_the_tolerance_is_refused(self):
+        # The exact tick error is 9.999998e-10 but the engine's binary float error is about 1.00000008e-9.
+        text = Decimal("0.13333333336666666")
+        pinned = _surface_flight()
+        pinned["duration_seconds"] = text
+        pinned_problems = _problems(pinned)
+        self.assertTrue(any("tick_rate must be an integer" in p for p in pinned_problems), pinned_problems)
+        pending = _pending()
+        pending["duration_seconds"] = text
+        pending_problems = _problems(pending, stem="cave-walk", allow_pending=True)
+        self.assertTrue(any("tick_rate must be an integer" in p for p in pending_problems), pending_problems)
+
     def test_just_outside_the_tolerance_is_refused(self):
         obj = _pending()
         obj["duration_seconds"] = Decimal("0.1000000002")
