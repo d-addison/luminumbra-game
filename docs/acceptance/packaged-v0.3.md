@@ -81,7 +81,11 @@ The bundle stores hashes and counts, never the material. Do not commit private
 audio, Steam SDK payloads, saves, journals, captures, or reports to this
 repository. The validator refuses private file extensions (audio, archives,
 binaries, libraries, SDK and key material; the list is in
-`tools/validators/acceptance.py`, matched case-insensitively) and local or
+`tools/validators/acceptance.py`, matched case-insensitively). A private extension is refused
+wherever it appears in a string unless an ASCII letter or digit follows it, so a bare `.wav` and
+`recording (1).wav` are refused while `capture.wavelength` is accepted. Within one save, a repeated
+file path is refused, comparing paths with Windows case folding (`world/A.txt` and `world/a.txt`
+collide). The validator also refuses local or
 network path shapes (drive paths, user home directories on Linux and macOS,
 UNC server shares, extended device paths, and `//` network shares) in every string of a bundle, so a
 bundle that names such material is rejected. A UNC or device path is recognised at the start of a string

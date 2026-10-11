@@ -73,16 +73,14 @@ _REQUIRED_LIMITATIONS = ("finite-residency", "distant-cave-edit-omitted")
 _LOCAL_PATTERNS = (re.compile("/ho" "me/"), re.compile("/Us" "ers/"))
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _NAMED_ESCAPES = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
-# A private extension ends a filename token: it follows a filename character or a
-# markdown or quoting delimiter (backtick, angle bracket, asterisk) and is followed by
-# the end of the text, whitespace, a quote, a backtick, an angle bracket, an asterisk,
-# a closing bracket, a comma, a semicolon, a colon, a question or exclamation mark, or
-# a full stop that ends a sentence. Matching ignores case, so a.wavelength and awav
-# are not refused.
+# Any occurrence of a private extension that is not immediately followed by an ASCII
+# letter or digit is refused, whatever precedes it. Matching ignores case, so a.wavelength,
+# data.apple, notes.opusx and awav are accepted while a bare .wav, _capture.wav_ and
+# recording (1).wav are refused.
 _PRIVATE_FILE = re.compile(
-    r"(?<=[\w\-`<>*])("
-    + "|".join(re.escape(extension) for extension in PRIVATE_EXTENSIONS)
-    + r")(?=\Z|[\s\"'`<>*)\]},;:?!]|\.(?=\s|\Z))",
+    r"(\.(?:"
+    + "|".join(re.escape(extension[1:]) for extension in PRIVATE_EXTENSIONS)
+    + r"))(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
 # Windows reserved device names, matched on the part before the first dot, and the
@@ -436,11 +434,20 @@ def _check_saves(problems, value, path):
         files_path = _join(here, "files")
         if not _list(problems, save["files"], files_path, minimum=1):
             continue
+        paths_seen = set()
         for position, entry in enumerate(save["files"]):
             entry_here = "%s[%d]" % (files_path, position)
             if not _keys(problems, entry, entry_here, ("path", "sha256_after", "sha256_before")):
                 continue
             _check_portable_path(problems, entry["path"], _join(entry_here, "path"))
+            if isinstance(entry["path"], str):
+                # Windows file names are case-insensitive, so aliases of one path collide.
+                folded = entry["path"].casefold()
+                if folded in paths_seen:
+                    problems.append(
+                        "%s: duplicate path '%s'" % (_join(entry_here, "path"), entry["path"])
+                    )
+                paths_seen.add(folded)
             before_ok = _hex(problems, entry["sha256_before"], _join(entry_here, "sha256_before"))
             after_ok = _hex(problems, entry["sha256_after"], _join(entry_here, "sha256_after"))
             if before_ok and after_ok and entry["sha256_before"] != entry["sha256_after"]:

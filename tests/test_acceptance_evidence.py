@@ -714,6 +714,31 @@ class SaveRuleTest(_BundleTest):
         doc["saves"][1]["name"] = "edit-save"
         self.assertProblem(doc, "saves[1].name: duplicate save name 'edit-save'")
 
+    def test_duplicate_path_in_one_save_refused(self):
+        doc = self.bundle()
+        doc["saves"][0]["files"].append(
+            {"path": "world/settings.txt",
+             "sha256_before": _h("settings-kept"),
+             "sha256_after": _h("settings-kept")})
+        self.assertProblem(doc, "saves[0].files[2].path: duplicate path 'world/settings.txt'")
+
+    def test_duplicate_path_with_case_alias_and_other_hash_refused(self):
+        doc = self.bundle()
+        doc["saves"][0]["files"].append(
+            {"path": "world/A.txt",
+             "sha256_before": _h("alias-start"),
+             "sha256_after": _h("alias-edited")})
+        doc["saves"][0]["files"].append(
+            {"path": "world/a.txt",
+             "sha256_before": _h("other-start"),
+             "sha256_after": _h("other-edited")})
+        self.assertProblem(doc, "saves[0].files[3].path: duplicate path 'world/a.txt'")
+
+    def test_same_path_in_different_saves_accepted(self):
+        doc = self.bundle()
+        doc["saves"][2]["files"][0]["path"] = "world/settings.txt"
+        self.assertNoProblem(doc, "duplicate path")
+
 
 class SceneRuleTest(_BundleTest):
     def test_scene_not_settled_refused(self):
@@ -1033,6 +1058,28 @@ class PrivateMaterialTest(_BundleTest):
             '"capture.wav"',
             "{capture.wav}",
         ):
+            with self.subTest(text=text):
+                doc = self.bundle()
+                doc["historical"][0]["disposition"] = text
+                self.assertProblem(doc, "historical[0].disposition: private file extension '.wav'")
+
+    def test_bare_private_extension_refused(self):
+        doc = self.bundle()
+        doc["historical"][0]["disposition"] = ".wav"
+        self.assertProblem(doc, "historical[0].disposition: private file extension '.wav'")
+
+    def test_private_extension_wrapped_in_underscores_refused(self):
+        doc = self.bundle()
+        doc["historical"][0]["disposition"] = "_capture.wav_"
+        self.assertProblem(doc, "historical[0].disposition: private file extension '.wav'")
+
+    def test_private_extension_after_parenthesised_number_refused(self):
+        doc = self.bundle()
+        doc["historical"][0]["disposition"] = "see recording (1).wav"
+        self.assertProblem(doc, "historical[0].disposition: private file extension '.wav'")
+
+    def test_private_extension_inside_bold_or_backticks_refused(self):
+        for text in ("**x.wav**", "`x.wav`", "[x.wav]"):
             with self.subTest(text=text):
                 doc = self.bundle()
                 doc["historical"][0]["disposition"] = text
