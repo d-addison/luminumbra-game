@@ -35,14 +35,14 @@
   },
   "limitations": [
     {
-      "blocks_release": false,
+      "blocks_release": true,
       "id": "finite-residency",
-      "status": "open"
+      "status": "closed"
     },
     {
-      "blocks_release": false,
+      "blocks_release": true,
       "id": "distant-cave-edit-omitted",
-      "status": "open"
+      "status": "closed"
     }
   ],
   "package": {

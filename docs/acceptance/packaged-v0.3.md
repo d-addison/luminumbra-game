@@ -14,6 +14,21 @@ rests on: hashes and counts of the native runs.
 qualified machine. No session, scene, forest, or launcher evidence exists yet.
 This marker stays until a release-mode validation of a bundle passes.
 
+## Step 0: repository gates before native acceptance
+
+Run both commands from the game repository root before any native run starts.
+Both must exit 0 before the native acceptance begins, and both are repeated as
+completion conditions in the Native handoff table.
+
+```
+python -I -B tools/validate_content.py --root . --release
+python -I -B tools/validate_public_tree.py
+```
+
+The first command runs in release mode: pending workloads, scenes, and identities
+must be resolved. Pending entries are refused, so a content tree that still has
+them is not ready for native acceptance.
+
 ## Two validation modes
 
 The validator is `tools/validate_acceptance_evidence.py`. It takes exactly one
@@ -30,9 +45,11 @@ of two modes.
   `artifacts verified: <n>`, where `<n>` is the count of distinct artifacts.
 
 `--release` adds the release gate. It refuses any scene defect with disposition
-`open`, and any limitation with status `open` and `blocks_release` true. It
-requires `--artifact-root`. Using `--release` without `--artifact-root` is a usage
-error (exit 2). Giving both modes, or neither, is also a usage error.
+`open`, any limitation with status `open` and `blocks_release` true, and any
+bundle whose `launcher.preview_audio_off` or `disabled_backend.settings_preserved`
+is not true. It requires `--artifact-root`. Using `--release` without
+`--artifact-root` is a usage error (exit 2). Giving both modes, or neither, is
+also a usage error.
 
 Exit codes: 0 ok, 1 invalid, 2 usage error. Problems print one per line as
 `PATH: reason`, where PATH is a json-path such as `sessions[2].exit_code`, and at
@@ -49,9 +66,9 @@ DIR/
 ```
 
 A file's name is the sha256 of its content. The hashes the bundle names are the
-package archive, each session's command and journal, each save file's before
-and after hash, each scene capture, the forest submission and report, the
-launcher identity, and the disabled-backend proof.
+package archive, each content pack, each session's command and journal, each save
+file's before and after hash, each scene capture, the forest submission and
+report, the launcher identity, and the disabled-backend proof.
 
 ## Evidence is hash-only
 
@@ -75,11 +92,11 @@ evidence, the artifact expected, and the bundle key that records the result.
 | Six settled scenes, each with a defect disposition | Capture each of six scenes; record each defect as `accepted`, `fixed`, or `waived` (release refuses `open`) | Capture per scene | `scenes[]` (at least six), `settled`, `defects[].disposition` |
 | Forest submission and report agreement | Run the forest check described in the engine document; record both documents | Forest submission and report documents | `forest.agree`, `forest.submission_sha256`, `forest.report_sha256` |
 | Normal startup selects null audio regardless of saved volume | Launch the packaged client with a nonzero saved master volume and without an audio flag | Journal | `sessions[]` kind `restart` or `load`, `audio_mode` `null`, `saved_master` above zero |
-| The audio-off flag wins over a diagnostic opt-in | Launch with the audio-off flag while the diagnostic opt-in is set | Journal containing the audio-off marker | `sessions[]` id `restart-no-audio`: `audio_mode` `off`, `no_audio_flag` true |
-| Disabled settings controls preserve settings | Operator checks each disabled settings control and confirms the stored settings are unchanged | Proof record | `disabled_backend.proof_sha256`, `disabled_backend.settings_preserved` |
-| Preview launcher stays audio-off and its guard holds | Run the preview launcher; record its identity and the preview session | Launcher identity; preview journal with the audio-off marker | `launcher.identity_sha256`, `launcher.preview_audio_off`; `sessions[]` kind `preview` |
-| Finite residency and distant cave/edit omissions preserved | Recorded as documented limitations; confirm the engine document still states them | None (documented limitation) | `limitations[]` ids `finite-residency`, `distant-cave-edit-omitted` |
-| Historical application hang kept as a record | Kept as the historical record of the client hang; never counted as a session exit | None | `historical[]` kind `application-hang`; exit code 0xCFFFFFFF (3489660927 unsigned, -805306369 signed) refused in every session |
+| `--no-audio` wins over a diagnostic opt-in | Launch with both `--enable-audio --no-audio` (the diagnostic opt-in and the audio-off flag). The engine document states that `--enable-audio` is an experimental diagnostic opt-in and that `--no-audio` always suppresses it | Journal containing the audio-off marker | `sessions[]` id `restart-no-audio`: `audio_mode` `off`, `no_audio_flag` true |
+| Disabled settings controls preserve settings | Operator checks each disabled settings control and confirms the stored settings are unchanged | Proof record | `disabled_backend.proof_sha256`, `disabled_backend.settings_preserved` (release requires true) |
+| Preview launcher stays audio-off and its guard holds | Run the preview launcher; record its identity and the preview session | Launcher identity; preview journal with the audio-off marker | `launcher.identity_sha256`, `launcher.preview_audio_off` (release requires true); `sessions[]` kind `preview` |
+| Finite residency and distant cave/edit omissions | Not accepted for v0.3. Each gap is recorded as a `limitations[]` entry with status `open` and `blocks_release` true. It stays open until the final requirement is met: an unbounded world with 16 km distant coverage, with edits and caves in distant tiers (the expanded v0.3 contract). Only then may the entry become `closed` | None until closed | `limitations[]` ids `finite-residency`, `distant-cave-edit-omitted`; `--release` refuses either while open |
+| Historical application hang kept as a record | Kept as the historical record of the client hang (exit `0xCFFFFFFF`, 3489660927 unsigned, -805306369 signed; see the engine document section "Native client hang (PID 66604)"). It is never counted as a session exit and is refused as an exit code in every session. A recurrence blocks publication | None | `historical[]` kind `application-hang` |
 
 ## Native handoff
 
@@ -87,8 +104,9 @@ evidence, the artifact expected, and the bundle key that records the result.
 |---|---|
 | Owner | Operator on the qualified machine |
 | Candidate identity | The package git sha and the package archive sha256 in the bundle |
-| Commands | The criteria commands above; the packaged launch command is supplied by the operator and its sha256 goes in `command_sha256` |
-| Completion | A release-mode validation passes: `python3 -I -B tools/validate_acceptance_evidence.py BUNDLE.json --artifact-root DIR --release` exits 0 and prints `artifacts verified: <n>` |
+| Launch conditions | Quoted from the engine document `docs/v0.3-acceptance.md`, section "Native client hang (PID 66604)": "every remaining native acceptance run launches with the watchdog armed and stdout on local disk, and a recurrence must be examined through its actual hang report and dump before any verdict; a recurrence blocks publication." The watchdog is armed with the documented opt-in `--hang-watchdog-seconds N`; N must exceed the longest legitimate stage (such as a large save). Stdout goes to a file on local disk, not over the WSL network redirector |
+| Commands | Step 0 commands above; the criteria commands above; the packaged launch command is supplied by the operator and its sha256 goes in `command_sha256` |
+| Completion | All of the following hold: `python -I -B tools/validate_content.py --root . --release` exits 0; `python -I -B tools/validate_public_tree.py` exits 0; `python3 -I -B tools/validate_acceptance_evidence.py BUNDLE.json --artifact-root DIR --release` exits 0 and prints `artifacts verified: <n>`; no hang recurrence is open |
 
 Until that release-mode validation passes, the status of this runbook is
 NEEDS-NATIVE-RUN.

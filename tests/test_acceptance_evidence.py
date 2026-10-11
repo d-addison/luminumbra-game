@@ -169,9 +169,12 @@ def make_bundle():
         },
         "launcher": {"identity_sha256": _h("launcher-identity"), "preview_audio_off": True},
         "disabled_backend": {"proof_sha256": _h("disabled-backend-proof"), "settings_preserved": True},
+        # The valid release bundle has no open limitation: both gaps are closed here,
+        # which models a run after the final v0.3 requirement is met. While open they
+        # are blocking and release mode refuses them (see the limitation tests).
         "limitations": [
-            {"blocks_release": False, "id": "finite-residency", "status": "open"},
-            {"blocks_release": False, "id": "distant-cave-edit-omitted", "status": "open"},
+            {"blocks_release": True, "id": "finite-residency", "status": "closed"},
+            {"blocks_release": True, "id": "distant-cave-edit-omitted", "status": "closed"},
         ],
         "historical": [
             {
@@ -335,12 +338,32 @@ class SchemaRuleTest(_BundleTest):
     def test_negative_saved_master_refused(self):
         doc = self.bundle()
         doc["sessions"][0]["saved_master"] = -1
-        self.assertProblem(doc, "sessions[0].saved_master: must be a non-negative number")
+        self.assertProblem(doc, "sessions[0].saved_master: must be a finite non-negative number")
 
     def test_decimal_saved_master_accepted(self):
         doc = self.bundle()
         doc["sessions"][0]["saved_master"] = Decimal("0.5")
         self.assertNoProblem(doc, "saved_master")
+
+    def test_saved_master_accepts_finite_int_float_and_decimal(self):
+        for value in (0, 75, 0.5, Decimal("0.5"), Decimal("75")):
+            with self.subTest(value=value):
+                doc = self.bundle()
+                doc["sessions"][0]["saved_master"] = value
+                self.assertNoProblem(doc, "saved_master")
+
+    def test_saved_master_refuses_nan_and_infinity(self):
+        for value in (float("nan"), float("inf"), float("-inf"),
+                      Decimal("NaN"), Decimal("sNaN"), Decimal("Infinity"), Decimal("-Infinity")):
+            with self.subTest(value=value):
+                doc = self.bundle()
+                doc["sessions"][0]["saved_master"] = value
+                self.assertProblem(doc, "sessions[0].saved_master: must be a finite non-negative number")
+
+    def test_saved_master_refuses_bool(self):
+        doc = self.bundle()
+        doc["sessions"][0]["saved_master"] = True
+        self.assertProblem(doc, "sessions[0].saved_master: must be a finite non-negative number")
 
     def test_refusal_keys_refused_on_non_refusal_session(self):
         doc = self.bundle()
@@ -562,6 +585,133 @@ class ForestAndLimitationTest(_BundleTest):
         doc["unresolved_diagnostics"] = [3]
         self.assertProblem(doc, "unresolved_diagnostics[0]: must be a string")
 
+    def test_open_finite_residency_limitation_refused_in_release(self):
+        doc = self.bundle()
+        doc["limitations"][0]["status"] = "open"
+        self.assertProblem(doc, "limitations[0]: open blocking limitation is refused in release mode",
+                           release=True)
+        self.assertNoProblem(doc, "open blocking limitation", release=False)
+
+    def test_open_distant_cave_edit_limitation_refused_in_release(self):
+        doc = self.bundle()
+        doc["limitations"][1]["status"] = "open"
+        self.assertProblem(doc, "limitations[1]: open blocking limitation is refused in release mode",
+                           release=True)
+        self.assertNoProblem(doc, "open blocking limitation", release=False)
+
+    def test_open_limitation_that_does_not_block_is_allowed_in_release(self):
+        doc = self.bundle()
+        doc["limitations"].append({"blocks_release": False, "id": "fixture-note", "status": "open"})
+        self.assertNoProblem(doc, "open blocking limitation", release=True)
+
+    def test_blocks_release_must_be_bool(self):
+        doc = self.bundle()
+        doc["limitations"][0]["blocks_release"] = "true"
+        self.assertProblem(doc, "limitations[0].blocks_release: must be true or false")
+
+
+class ReleaseOnlyRecordTest(_BundleTest):
+    def test_preview_audio_off_must_be_true_in_release_mode(self):
+        doc = self.bundle()
+        doc["launcher"]["preview_audio_off"] = False
+        self.assertProblem(doc, "launcher.preview_audio_off must be true in release mode", release=True)
+
+    def test_preview_audio_off_false_is_recorded_outside_release(self):
+        doc = self.bundle()
+        doc["launcher"]["preview_audio_off"] = False
+        self.assertNoProblem(doc, "launcher.preview_audio_off", release=False)
+        self.assertNoProblem(doc, "launcher.preview_audio_off must be true", release=False)
+
+    def test_settings_preserved_must_be_true_in_release_mode(self):
+        doc = self.bundle()
+        doc["disabled_backend"]["settings_preserved"] = False
+        self.assertProblem(doc, "disabled_backend.settings_preserved must be true in release mode",
+                           release=True)
+
+    def test_settings_preserved_false_is_recorded_outside_release(self):
+        doc = self.bundle()
+        doc["disabled_backend"]["settings_preserved"] = False
+        self.assertNoProblem(doc, "disabled_backend.settings_preserved", release=False)
+        self.assertClean(doc, release=False)
+
+    def test_launcher_and_settings_flags_must_be_bool(self):
+        doc = self.bundle()
+        doc["launcher"]["preview_audio_off"] = "true"
+        doc["disabled_backend"]["settings_preserved"] = 1
+        self.assertProblem(doc, "launcher.preview_audio_off: must be true or false", release=True)
+        self.assertProblem(doc, "disabled_backend.settings_preserved: must be true or false", release=True)
+
+
+class MutationTableTest(_BundleTest):
+    """Each row mutates one field of the valid helper bundle and expects a named problem."""
+
+    CASES = (
+        ("duplicate pack ids",
+         lambda d: d["content"]["packs"].append(dict(d["content"]["packs"][0])),
+         "content.packs[1].id: duplicate id 'base-content'"),
+        ("duplicate scene ids",
+         lambda d: d["scenes"][1].__setitem__("id", d["scenes"][0]["id"]),
+         "scenes[1].id: duplicate id 'forest-edge'"),
+        ("duplicate limitation ids",
+         lambda d: d["limitations"].append(dict(d["limitations"][0])),
+         "limitations[2].id: duplicate id 'finite-residency'"),
+        ("duplicate historical ids",
+         lambda d: d["historical"].append(dict(d["historical"][0])),
+         "historical[1].id: duplicate id 'application-hang-66604'"),
+        ("duplicate session ids",
+         lambda d: d["sessions"][1].__setitem__("id", d["sessions"][0]["id"]),
+         "sessions[1].id: duplicate id 'create-world'"),
+        ("duplicate save names",
+         lambda d: d["saves"][1].__setitem__("name", d["saves"][0]["name"]),
+         "saves[1].name: duplicate save name 'edit-save'"),
+        ("empty packs",
+         lambda d: d["content"].__setitem__("packs", []),
+         "content.packs: needs at least 1 item(s)"),
+        ("empty policy.refusal_exit_codes",
+         lambda d: d["policy"].__setitem__("refusal_exit_codes", []),
+         "policy.refusal_exit_codes: needs at least 1 item(s)"),
+        ("refusal exit code 0 in policy",
+         lambda d: d["policy"].__setitem__("refusal_exit_codes", [0, 2]),
+         "policy.refusal_exit_codes[0]: must be an integer from 1 to 125"),
+        ("refusal exit code 126 in policy",
+         lambda d: d["policy"].__setitem__("refusal_exit_codes", [126, 2]),
+         "policy.refusal_exit_codes[0]: must be an integer from 1 to 125"),
+        ("non-bool no_audio_flag",
+         lambda d: d["sessions"][0].__setitem__("no_audio_flag", "false"),
+         "sessions[0].no_audio_flag: must be true or false"),
+        ("non-bool scene settled",
+         lambda d: d["scenes"][0].__setitem__("settled", 1),
+         "scenes[0].settled: must be true"),
+        ("non-bool refusal saves_unchanged",
+         lambda d: d["sessions"][REFUSAL_SAVE].__setitem__("saves_unchanged", "yes"),
+         "sessions[7].saves_unchanged: must be true"),
+        ("non-bool forest agree",
+         lambda d: d["forest"].__setitem__("agree", "true"),
+         "forest.agree: must be true"),
+        ("non-bool launcher preview_audio_off",
+         lambda d: d["launcher"].__setitem__("preview_audio_off", None),
+         "launcher.preview_audio_off: must be true or false"),
+        ("non-bool disabled settings_preserved",
+         lambda d: d["disabled_backend"].__setitem__("settings_preserved", "true"),
+         "disabled_backend.settings_preserved: must be true or false"),
+        ("non-bool limitation blocks_release",
+         lambda d: d["limitations"][0].__setitem__("blocks_release", 0),
+         "limitations[0].blocks_release: must be true or false"),
+        ("string exit_code",
+         lambda d: d["sessions"][0].__setitem__("exit_code", "0"),
+         "sessions[0].exit_code: must be an integer"),
+        ("string refusal exit code in policy",
+         lambda d: d["policy"].__setitem__("refusal_exit_codes", ["2", 3]),
+         "policy.refusal_exit_codes[0]: must be an integer from 1 to 125"),
+    )
+
+    def test_each_mutation_is_refused_with_its_named_problem(self):
+        for name, mutate, text in self.CASES:
+            with self.subTest(mutation=name):
+                doc = self.bundle()
+                mutate(doc)
+                self.assertProblem(doc, text)
+
 
 class PrivateMaterialTest(_BundleTest):
     def test_private_extension_string_refused(self):
@@ -596,10 +746,23 @@ class PrivateMaterialTest(_BundleTest):
         doc["historical"][0]["disposition"] = "copied from " + "/Us" + "ers/" + "builder"
         self.assertProblem(doc, "historical[0].disposition: local absolute path shape is not allowed")
 
+    def test_drive_path_with_repeated_separators_refused(self):
+        for bad in ("C://temp/run", "C:\\\\temp", "D:\\\\\\\\share\\\\run", "E:/temp/run"):
+            with self.subTest(value=bad):
+                doc = self.bundle()
+                doc["historical"][0]["disposition"] = "log at " + bad
+                self.assertProblem(doc, "historical[0].disposition: local absolute path shape is not allowed")
+
     def test_url_is_not_a_drive_path(self):
         doc = self.bundle()
         doc["historical"][0]["disposition"] = "see https://example.invalid/run"
         self.assertNoProblem(doc, "local absolute path shape")
+
+    def test_bare_url_host_is_not_a_drive_path(self):
+        doc = self.bundle()
+        doc["historical"][0]["disposition"] = "see https://x"
+        self.assertNoProblem(doc, "local absolute path shape")
+        self.assertClean(doc)
 
 
 class ArtifactHashListTest(unittest.TestCase):
@@ -607,7 +770,7 @@ class ArtifactHashListTest(unittest.TestCase):
         doc = make_bundle()
         digests = {digest for digest, _location in artifact_hashes(doc)}
         expected = {
-            _h("archive"), _h("manifest-start"), _h("manifest-edited"), _h("settings-kept"),
+            _h("archive"), _h("pack-base"), _h("manifest-start"), _h("manifest-edited"), _h("settings-kept"),
             _h("forest-submission"), _h("forest-report"), _h("launcher-identity"),
             _h("disabled-backend-proof"),
         }
@@ -634,6 +797,24 @@ class ArtifactRootTest(unittest.TestCase):
         _store(self.store)
         self.assertEqual(verify_artifacts(doc, str(self.store)), [])
         self.assertEqual(artifact_count(doc), len({d for d, _ in artifact_hashes(doc)}))
+        self.assertIn((_h("pack-base"), "content.packs[0].sha256"), artifact_hashes(doc))
+
+    def test_missing_pack_artifact_reported_with_location(self):
+        doc = make_bundle()
+        _store(self.store, skip=frozenset([_h("pack-base")]))
+        problems = verify_artifacts(doc, str(self.store))
+        self.assertEqual(
+            problems,
+            ["content.packs[0].sha256: artifact %s missing" % _h("pack-base")],
+        )
+
+    def test_mismatched_pack_artifact_reported_with_location(self):
+        doc = make_bundle()
+        _store(self.store)
+        digest = _h("pack-base")
+        (self.store / "sha256" / digest).write_bytes(b"tampered pack\n")
+        problems = verify_artifacts(doc, str(self.store))
+        self.assertEqual(problems, ["content.packs[0].sha256: artifact %s mismatch" % digest])
 
     def test_missing_artifact_reported_with_location(self):
         doc = make_bundle()
@@ -827,9 +1008,9 @@ class FixtureTest(unittest.TestCase):
         ("invalid-refusal-code.json", False, "not in policy.refusal_exit_codes", False),
         ("invalid-hang-signature.json", False, "application hang signature", False),
         ("invalid-audio-off-without-flag.json", False, "sessions[0]: audio_mode off requires no_audio_flag true", False),
-        ("invalid-preview-audio.json", False, "sessions[0]: preview requires audio_mode off", False),
+        ("invalid-preview-audio.json", False, "preview requires audio_mode off", False),
         ("invalid-missing-session-kind.json", False, "missing session kind 'switch'", False),
-        ("invalid-refusal-saves-changed.json", False, "sessions[0].saves_unchanged: must be true", False),
+        ("invalid-refusal-saves-changed.json", False, "saves_unchanged: must be true", False),
         ("invalid-no-edited-save.json", False, "saves: no save has an edited file", False),
         ("invalid-scene-unsettled.json", False, "scenes[0].settled: must be true", False),
         ("invalid-open-defect.json", True, "open defect is refused in release mode", True),

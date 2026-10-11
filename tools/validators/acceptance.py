@@ -16,6 +16,7 @@ bundle placed under content/ gets the structural checks.
 """
 
 import hashlib
+import math
 import os
 import re
 from decimal import Decimal
@@ -55,7 +56,7 @@ REFUSAL_KEYS = frozenset(["refusal_code", "saves_unchanged"])
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _HEX40 = re.compile(r"[0-9a-f]{40}")
 _DRIVE_START = re.compile(r"[A-Za-z]:")
-_DRIVE_PATH = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:(?:\\|/(?!/))")
+_DRIVE_PATH = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:(?:\\|/)")
 _LOCAL_PATTERNS = (re.compile("/ho" "me/"), re.compile("/Us" "ers/"))
 
 
@@ -91,7 +92,16 @@ def _is_int(value):
 
 
 def _is_number(value):
-    return (_is_int(value) or isinstance(value, Decimal)) and value >= 0
+    """Return True for a finite, non-negative int, float, or Decimal (not bool)."""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value >= 0
+    if isinstance(value, float):
+        return math.isfinite(value) and value >= 0
+    if isinstance(value, Decimal):
+        return value.is_finite() and value >= 0
+    return False
 
 
 def _hex(problems, value, path, length=64):
@@ -223,7 +233,9 @@ def _check_sessions(problems, value, path, codes):
         if not isinstance(flag, bool):
             problems.append("%s: must be true or false" % _join(here, "no_audio_flag"))
         if not _is_number(session["saved_master"]):
-            problems.append("%s: must be a non-negative number" % _join(here, "saved_master"))
+            problems.append(
+                "%s: must be a finite non-negative number" % _join(here, "saved_master")
+            )
         if audio == "off" and flag is False:
             problems.append("%s: audio_mode off requires no_audio_flag true" % here)
         if session["kind"] == "preview" and not (audio == "off" and flag is True):
@@ -348,20 +360,28 @@ def _check_forest(problems, value, path):
         problems.append("%s: must be true" % _join(path, "agree"))
 
 
-def _check_launcher(problems, value, path):
+def _check_launcher(problems, value, path, release):
     if not _keys(problems, value, path, ("identity_sha256", "preview_audio_off")):
         return
     _hex(problems, value["identity_sha256"], _join(path, "identity_sha256"))
-    if not isinstance(value["preview_audio_off"], bool):
-        problems.append("%s: must be true or false" % _join(path, "preview_audio_off"))
+    audio_off = value["preview_audio_off"]
+    audio_path = _join(path, "preview_audio_off")
+    if not isinstance(audio_off, bool):
+        problems.append("%s: must be true or false" % audio_path)
+    elif release and audio_off is not True:
+        problems.append("%s must be true in release mode" % audio_path)
 
 
-def _check_disabled_backend(problems, value, path):
+def _check_disabled_backend(problems, value, path, release):
     if not _keys(problems, value, path, ("proof_sha256", "settings_preserved")):
         return
     _hex(problems, value["proof_sha256"], _join(path, "proof_sha256"))
-    if not isinstance(value["settings_preserved"], bool):
-        problems.append("%s: must be true or false" % _join(path, "settings_preserved"))
+    preserved = value["settings_preserved"]
+    preserved_path = _join(path, "settings_preserved")
+    if not isinstance(preserved, bool):
+        problems.append("%s: must be true or false" % preserved_path)
+    elif release and preserved is not True:
+        problems.append("%s must be true in release mode" % preserved_path)
 
 
 def _check_limitations(problems, value, path, release):
@@ -460,9 +480,9 @@ def validate_bundle(doc, *, release=False):
     if "forest" in doc:
         _check_forest(problems, doc["forest"], "forest")
     if "launcher" in doc:
-        _check_launcher(problems, doc["launcher"], "launcher")
+        _check_launcher(problems, doc["launcher"], "launcher", release)
     if "disabled_backend" in doc:
-        _check_disabled_backend(problems, doc["disabled_backend"], "disabled_backend")
+        _check_disabled_backend(problems, doc["disabled_backend"], "disabled_backend", release)
     if "limitations" in doc:
         _check_limitations(problems, doc["limitations"], "limitations", release)
     if "historical" in doc:
@@ -484,6 +504,11 @@ def artifact_hashes(doc):
     package = doc.get("package")
     if isinstance(package, dict):
         add(package.get("archive_sha256"), "package.archive_sha256")
+    content = doc.get("content")
+    packs = content.get("packs") if isinstance(content, dict) else None
+    for index, pack in enumerate(packs if isinstance(packs, list) else []):
+        if isinstance(pack, dict):
+            add(pack.get("sha256"), "content.packs[%d].sha256" % index)
     sessions = doc.get("sessions")
     for index, session in enumerate(sessions if isinstance(sessions, list) else []):
         if not isinstance(session, dict):
