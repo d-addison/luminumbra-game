@@ -226,6 +226,20 @@ class NegativeTests(ReceiptTestCase):
         self.assertEqual(code, 1, err)
         self.assertNotIn("Traceback", err)
 
+    def test_deeply_nested_receipt_is_controlled(self):
+        receipt = _write_text_bytes(self.dir / "deep.json", "[" * 200000 + "]" * 200000 + "\n")
+        code, out, err = _run(["--receipt", str(receipt), "--manifest", str(MANIFEST)])
+        self.assertEqual(code, 1, err)
+        self.assertIn("json nesting is too deep", err)
+        self.assertNotIn("Traceback", err)
+
+    def test_deeply_nested_manifest_is_controlled(self):
+        manifest = _write_text_bytes(self.dir / "deep-manifest.json", "[" * 200000 + "]" * 200000 + "\n")
+        code, out, err = _run(["--receipt", str(FIXTURE), "--manifest", str(manifest)])
+        self.assertEqual(code, 1, err)
+        self.assertIn("json nesting is too deep", err)
+        self.assertNotIn("Traceback", err)
+
     def test_negative_residual_refused(self):
         self._expect_failure(
             lambda d: d["leaf_fitter"]["result"].update(maximum_relative_fit_error=-1),

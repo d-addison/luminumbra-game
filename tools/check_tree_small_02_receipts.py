@@ -137,14 +137,25 @@ def _is_command_list(value):
     return isinstance(value, list) and all(_is_string_list(command) for command in value)
 
 
+def _load_json(path):
+    """Strict JSON load that turns excessive nesting into a controlled SchemaError."""
+    try:
+        return schema.load_json_file(path)
+    except RecursionError:
+        raise SchemaError("%s: json nesting is too deep" % path) from None
+
+
+MAX_SPHERE_MAGNITUDE = 10**12
+
+
 def _is_finite_number(item):
     if isinstance(item, bool):
         return False
     if isinstance(item, Decimal):
-        return item.is_finite()
+        return item.is_finite() and abs(item) <= MAX_SPHERE_MAGNITUDE
     if isinstance(item, int):
-        return True
-    return isinstance(item, float) and math.isfinite(item)
+        return abs(item) <= MAX_SPHERE_MAGNITUDE
+    return isinstance(item, float) and math.isfinite(item) and abs(item) <= MAX_SPHERE_MAGNITUDE
 
 
 def _check_bounding_sphere(where, value, problems):
@@ -536,7 +547,7 @@ def check_json(path, text):
     except OSError as exc:
         return ["%s: cannot read (%s)" % (path, exc.strerror)]
     try:
-        committed = schema.load_json_file(path)
+        committed = _load_json(path)
     except SchemaError as exc:
         return [str(exc)]
     problems = []
@@ -617,8 +628,8 @@ def main(argv=None):
         print("%s: cannot read (%s)" % (manifest_path, exc.strerror), file=sys.stderr)
         return 2
     try:
-        receipt = schema.load_json_file(receipt_path)
-        manifest = schema.load_json_file(manifest_path)
+        receipt = _load_json(receipt_path)
+        manifest = _load_json(manifest_path)
     except SchemaError as exc:
         print(str(exc), file=sys.stderr)
         return 1
