@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  checks:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-24.04","windows-2022"]') || fromJSON('["ubuntu-24.04"]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Unit tests
+        run: |
+          PY=python
+          command -v python >/dev/null || PY=python3
+          "$PY" -I -B -m unittest discover -s tests -v
+
+      - name: Public tree guard
+        run: |
+          PY=python
+          command -v python >/dev/null || PY=python3
+          "$PY" -I -B tools/validate_public_tree.py --root .
+
+      - name: Content validation
+        run: |
+          PY=python
+          command -v python >/dev/null || PY=python3
+          "$PY" -I -B tools/validate_content.py --root . --allow-pending
