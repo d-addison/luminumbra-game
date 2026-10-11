@@ -66,9 +66,19 @@ PREVIEW = 9
 NO_AUDIO_RESTART = 10
 
 
+# Command-line flags written into the command artifacts of the audio-off sessions. The
+# precedence session (restart-no-audio) carries the diagnostic opt-in as well.
+COMMAND_FLAGS = {
+    "command-preview-launch": ("--no-audio",),
+    "command-restart-no-audio": ("--enable-audio", "--no-audio"),
+}
+
+
 def _blob(label):
     """Return the bytes stored under the content address of ``label``."""
     text = "artifact %s\n" % label
+    if label in COMMAND_FLAGS:
+        text += " ".join(COMMAND_FLAGS[label]) + "\n"
     if label in OFF_JOURNALS:
         text += MARKER + "\n"
     return text.encode("utf-8")
@@ -82,6 +92,7 @@ def _labels():
     labels = [
         "archive", "pack-base", "manifest-start", "manifest-edited", "settings-kept",
         "forest-submission", "forest-report", "launcher-identity", "disabled-backend-proof",
+        "closure-finite-residency", "closure-distant-cave-edit-omitted",
     ]
     for sid in SESSION_IDS:
         labels.append("command-" + sid)
@@ -191,11 +202,14 @@ def make_bundle():
         "launcher": {"identity_sha256": _h("launcher-identity"), "preview_audio_off": True},
         "disabled_backend": {"proof_sha256": _h("disabled-backend-proof"), "settings_preserved": True},
         # The valid release bundle has no open limitation: both gaps are closed here,
-        # which models a run after the final v0.3 requirement is met. While open they
-        # are blocking and release mode refuses them (see the limitation tests).
+        # which models a run after the final v0.3 requirement is met. Each closed entry
+        # names its closure evidence artifact. While open they are blocking and release
+        # mode refuses them, and an open entry carries a null closure_sha256.
         "limitations": [
-            {"blocks_release": True, "id": "finite-residency", "status": "closed"},
-            {"blocks_release": True, "id": "distant-cave-edit-omitted", "status": "closed"},
+            {"blocks_release": True, "closure_sha256": _h("closure-finite-residency"),
+             "id": "finite-residency", "status": "closed"},
+            {"blocks_release": True, "closure_sha256": _h("closure-distant-cave-edit-omitted"),
+             "id": "distant-cave-edit-omitted", "status": "closed"},
         ],
         "historical": [
             {
@@ -361,6 +375,18 @@ class SchemaRuleTest(_BundleTest):
         self.assertEqual(marker_problem("LUM\nOFF"), "must not contain control characters")
         self.assertEqual(marker_problem("LUM\x7fOFF"), "must not contain control characters")
 
+    def test_marker_problem_refuses_short_markers(self):
+        for short in ("a", "LUM-OFF", "1234567"):
+            with self.subTest(marker=short):
+                self.assertEqual(marker_problem(short), "must be at least 8 characters")
+        self.assertIsNone(marker_problem("12345678"))
+
+    def test_marker_problem_refuses_whitespace_only_markers(self):
+        for blank in ("    ", "          ", "   "):
+            with self.subTest(marker=blank):
+                self.assertEqual(marker_problem(blank), "must not be only whitespace")
+        self.assertIsNone(marker_problem("  audio off  "))
+
     def test_duplicate_session_id_refused(self):
         doc = self.bundle()
         doc["sessions"][1]["id"] = "create-world"
@@ -423,6 +449,27 @@ class ExitCodeRuleTest(_BundleTest):
         doc["sessions"][0]["exit_code"] = "0"
         self.assertProblem(doc, "sessions[0].exit_code: must be an integer")
 
+    def test_exit_code_above_uint32_refused_before_normalisation(self):
+        doc = self.bundle()
+        doc["sessions"][0]["exit_code"] = 4294967296
+        self.assertProblem(
+            doc, "sessions[0].exit_code: must be an integer from -2147483648 to 4294967295"
+        )
+
+    def test_exit_code_below_int32_refused_before_normalisation(self):
+        doc = self.bundle()
+        doc["sessions"][0]["exit_code"] = -2147483649
+        self.assertProblem(
+            doc, "sessions[0].exit_code: must be an integer from -2147483648 to 4294967295"
+        )
+
+    def test_exit_code_range_edges_are_not_range_refused(self):
+        for value in (4294967295, -1, -2147483648):
+            with self.subTest(value=value):
+                doc = self.bundle()
+                doc["sessions"][0]["exit_code"] = value
+                self.assertNoProblem(doc, "must be an integer from -2147483648 to 4294967295")
+
     def test_refusal_code_outside_policy_refused(self):
         doc = self.bundle()
         doc["sessions"][REFUSAL_SAVE]["exit_code"] = 9
@@ -456,10 +503,21 @@ class AudioRuleTest(_BundleTest):
         doc["sessions"][NO_AUDIO_RESTART]["no_audio_flag"] = False
         self.assertProblem(doc, "sessions[10]: audio_mode off requires no_audio_flag true")
 
-    def test_audio_null_with_flag_is_allowed(self):
+    def test_audio_null_with_flag_refused(self):
         doc = self.bundle()
         doc["sessions"][0]["no_audio_flag"] = True
-        self.assertNoProblem(doc, "sessions[0]: audio_mode")
+        self.assertProblem(doc, "sessions[0]: audio_mode null requires no_audio_flag false")
+
+    def test_audio_null_with_flag_refused_in_refusal_session(self):
+        doc = self.bundle()
+        doc["sessions"][REFUSAL_SAVE]["no_audio_flag"] = True
+        self.assertProblem(doc, "sessions[7]: audio_mode null requires no_audio_flag false")
+
+    def test_audio_off_with_flag_is_consistent(self):
+        doc = self.bundle()
+        self.assertNoProblem(doc, "audio_mode null requires")
+        self.assertNoProblem(doc, "audio_mode off requires")
+        self.assertClean(doc)
 
     def test_preview_with_null_audio_refused(self):
         doc = self.bundle()
@@ -816,24 +874,72 @@ class ForestAndLimitationTest(_BundleTest):
 
     def test_open_blocking_limitation_refused_in_release(self):
         doc = self.bundle()
-        doc["limitations"].append({"blocks_release": True, "id": "residency-cap", "status": "open"})
+        doc["limitations"].append({"blocks_release": True, "closure_sha256": None,
+                                   "id": "residency-cap", "status": "open"})
         self.assertProblem(doc, "limitations[2]: open blocking limitation is refused in release mode",
                            release=True)
 
     def test_open_blocking_limitation_accepted_outside_release(self):
         doc = self.bundle()
-        doc["limitations"].append({"blocks_release": True, "id": "residency-cap", "status": "open"})
+        doc["limitations"].append({"blocks_release": True, "closure_sha256": None,
+                                   "id": "residency-cap", "status": "open"})
         self.assertNoProblem(doc, "open blocking limitation", release=False)
 
     def test_closed_blocking_limitation_accepted_in_release(self):
         doc = self.bundle()
-        doc["limitations"].append({"blocks_release": True, "id": "residency-cap", "status": "closed"})
+        doc["limitations"].append({"blocks_release": True, "closure_sha256": _h("closure-finite-residency"),
+                                   "id": "residency-cap", "status": "closed"})
         self.assertClean(doc, release=True)
 
     def test_limitation_status_must_be_open_or_closed(self):
         doc = self.bundle()
         doc["limitations"][0]["status"] = "pending"
         self.assertProblem(doc, "limitations[0].status: must be open or closed")
+
+    def test_closed_limitation_without_closure_hash_refused(self):
+        doc = self.bundle()
+        doc["limitations"][0]["closure_sha256"] = None
+        self.assertProblem(doc, "limitations[0].closure_sha256: closed limitation needs closure evidence")
+        self.assertProblem(doc, "limitations[0].closure_sha256: closed limitation needs closure evidence",
+                           release=True)
+
+    def test_closed_limitation_missing_closure_key_refused(self):
+        doc = self.bundle()
+        del doc["limitations"][1]["closure_sha256"]
+        self.assertProblem(doc, "limitations[1]: missing key 'closure_sha256'")
+
+    def test_closed_limitation_closure_hash_must_be_hex(self):
+        doc = self.bundle()
+        doc["limitations"][0]["closure_sha256"] = _h("closure-finite-residency").upper()
+        self.assertProblem(doc, "limitations[0].closure_sha256: must be 64 lowercase hex characters")
+
+    def test_open_limitation_with_closure_hash_refused(self):
+        doc = self.bundle()
+        doc["limitations"][0]["status"] = "open"
+        self.assertProblem(doc, "limitations[0].closure_sha256: open limitation must have a null closure_sha256")
+        self.assertProblem(doc, "limitations[0].closure_sha256: open limitation must have a null closure_sha256",
+                           release=True)
+
+    def test_status_flip_alone_cannot_pass(self):
+        doc = self.bundle()
+        doc["limitations"][0]["status"] = "open"
+        self.assertProblem(doc, "limitations[0].closure_sha256: open limitation must have a null closure_sha256")
+        doc = self.bundle()
+        doc["limitations"][0]["closure_sha256"] = None
+        self.assertProblem(doc, "limitations[0].closure_sha256: closed limitation needs closure evidence")
+        doc = self.bundle()
+        doc["limitations"][0]["status"] = "open"
+        doc["limitations"][0]["closure_sha256"] = None
+        self.assertNoProblem(doc, "limitations[0].closure_sha256", release=False)
+        self.assertProblem(doc, "limitations[0]: open blocking limitation is refused in release mode",
+                           release=True)
+
+    def test_closed_limitation_closure_hash_is_an_artifact_hash(self):
+        doc = self.bundle()
+        self.assertIn((_h("closure-finite-residency"), "limitations[0].closure_sha256"),
+                      artifact_hashes(doc))
+        self.assertIn((_h("closure-distant-cave-edit-omitted"), "limitations[1].closure_sha256"),
+                      artifact_hashes(doc))
 
     def test_no_historical_record_refused(self):
         doc = self.bundle()
@@ -853,6 +959,7 @@ class ForestAndLimitationTest(_BundleTest):
     def test_open_finite_residency_limitation_refused_in_release(self):
         doc = self.bundle()
         doc["limitations"][0]["status"] = "open"
+        doc["limitations"][0]["closure_sha256"] = None
         self.assertProblem(doc, "limitations[0]: open blocking limitation is refused in release mode",
                            release=True)
         self.assertNoProblem(doc, "open blocking limitation", release=False)
@@ -860,13 +967,15 @@ class ForestAndLimitationTest(_BundleTest):
     def test_open_distant_cave_edit_limitation_refused_in_release(self):
         doc = self.bundle()
         doc["limitations"][1]["status"] = "open"
+        doc["limitations"][1]["closure_sha256"] = None
         self.assertProblem(doc, "limitations[1]: open blocking limitation is refused in release mode",
                            release=True)
         self.assertNoProblem(doc, "open blocking limitation", release=False)
 
     def test_open_limitation_that_does_not_block_is_allowed_in_release(self):
         doc = self.bundle()
-        doc["limitations"].append({"blocks_release": False, "id": "fixture-note", "status": "open"})
+        doc["limitations"].append({"blocks_release": False, "closure_sha256": None,
+                                   "id": "fixture-note", "status": "open"})
         self.assertNoProblem(doc, "open blocking limitation", release=True)
 
     def test_blocks_release_must_be_bool(self):
@@ -899,7 +1008,8 @@ class ForestAndLimitationTest(_BundleTest):
 
     def test_other_limitations_may_be_added_freely(self):
         doc = self.bundle()
-        doc["limitations"].append({"blocks_release": False, "id": "fixture-note", "status": "closed"})
+        doc["limitations"].append({"blocks_release": False, "closure_sha256": _h("closure-finite-residency"),
+                                   "id": "fixture-note", "status": "closed"})
         self.assertClean(doc, release=True)
 
 
@@ -1201,7 +1311,8 @@ class ArtifactHashListTest(unittest.TestCase):
         expected = {
             _h("archive"), _h("pack-base"), _h("manifest-start"), _h("manifest-edited"), _h("settings-kept"),
             _h("forest-submission"), _h("forest-report"), _h("launcher-identity"),
-            _h("disabled-backend-proof"),
+            _h("disabled-backend-proof"), _h("closure-finite-residency"),
+            _h("closure-distant-cave-edit-omitted"),
         }
         for sid in SESSION_IDS:
             expected.add(_h("command-" + sid))
@@ -1300,6 +1411,107 @@ class ArtifactRootTest(unittest.TestCase):
         problems = verify_artifacts(make_bundle(), str(self.root / "absent"), MARKER)
         self.assertEqual(len(problems), 1)
         self.assertIn("artifact root is not a directory", problems[0])
+
+    def _put(self, data):
+        """Store DATA under its content address in the test store and return the digest."""
+        (self.store / "sha256").mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(data).hexdigest()
+        (self.store / "sha256" / digest).write_bytes(data)
+        return digest
+
+    def _preview_command_problems(self, content):
+        """Verify a bundle whose audio-off preview command artifact holds CONTENT."""
+        doc = make_bundle()
+        _store(self.store)
+        doc["sessions"][PREVIEW]["command_sha256"] = self._put(content)
+        return verify_artifacts(doc, str(self.store), MARKER)
+
+    def test_missing_closure_artifact_reported_with_location(self):
+        doc = make_bundle()
+        closure = _h("closure-finite-residency")
+        _store(self.store, skip=frozenset([closure]))
+        self.assertEqual(
+            verify_artifacts(doc, str(self.store), MARKER),
+            ["limitations[0].closure_sha256: artifact %s missing" % closure],
+        )
+
+    def test_audio_off_command_without_no_audio_reported(self):
+        self.assertEqual(
+            self._preview_command_problems(b"artifact command-preview-launch\n--enable-audio\n"),
+            ["sessions[9].command_sha256: audio-off command lacks --no-audio"],
+        )
+
+    def test_no_audio_token_glued_to_neighbours_is_refused(self):
+        for text in (b"--no-audio-x", b"--no-audiofoo", b"--no-audio1", b"--no-audio-",
+                     b"--no-audio--", b"x--no-audio", b"0--no-audio", b"ab--no-audioZ"):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    self._preview_command_problems(b"artifact command-preview-launch\n" + text + b"\n"),
+                    ["sessions[9].command_sha256: audio-off command lacks --no-audio"],
+                )
+
+    def test_no_audio_token_next_to_space_quote_or_punctuation_is_accepted(self):
+        for text in (b"--no-audio", b"--no-audio\n", b" --no-audio", b'"--no-audio"',
+                     b"\x00--no-audio\x00", b"\t--no-audio=1", b"--enable-audio --no-audio",
+                     b"(--no-audio)", b"_--no-audio_"):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    self._preview_command_problems(b"artifact command-preview-launch\n" + text + b"\n"),
+                    [],
+                )
+
+    def test_no_audio_token_straddling_the_chunk_boundary_is_judged_whole(self):
+        refused = "sessions[9].command_sha256: audio-off command lacks --no-audio"
+        self.assertEqual(self._preview_command_problems(b"a" * 65533 + b"--no-audio\n"), [])
+        self.assertEqual(self._preview_command_problems(b"a" * 65526 + b"--no-audio" + b"x"), [refused])
+        self.assertEqual(self._preview_command_problems(b"a" * 65535 + b"x--no-audio"), [refused])
+
+    def test_marker_straddling_the_chunk_boundary_is_found(self):
+        doc = make_bundle()
+        _store(self.store)
+        # The marker starts at offset 65536 - 3, so its first three bytes are in the first chunk.
+        doc["sessions"][PREVIEW]["journal_sha256"] = self._put(
+            b"a" * 65533 + MARKER.encode("utf-8") + b"\n"
+        )
+        self.assertEqual(verify_artifacts(doc, str(self.store), MARKER), [])
+        doc["sessions"][PREVIEW]["journal_sha256"] = self._put(
+            b"a" * 65533 + MARKER[:-1].encode("utf-8") + b"\n"
+        )
+        self.assertEqual(
+            verify_artifacts(doc, str(self.store), MARKER),
+            ["sessions[9].journal_sha256: audio-off journal lacks the audio-off marker"],
+        )
+
+    def test_precedence_command_needs_both_flags(self):
+        doc = make_bundle()
+        _store(self.store)
+        doc["sessions"][NO_AUDIO_RESTART]["command_sha256"] = self._put(
+            b"artifact command-restart-no-audio\n--no-audio\n"
+        )
+        self.assertEqual(
+            verify_artifacts(doc, str(self.store), MARKER),
+            ["startup_checks.no_audio_precedence_session: command lacks --enable-audio"],
+        )
+        doc["sessions"][NO_AUDIO_RESTART]["command_sha256"] = self._put(
+            b"artifact command-restart-no-audio\n--enable-audio\n"
+        )
+        self.assertEqual(
+            verify_artifacts(doc, str(self.store), MARKER),
+            [
+                "sessions[10].command_sha256: audio-off command lacks --no-audio",
+                "startup_checks.no_audio_precedence_session: command lacks --no-audio",
+            ],
+        )
+
+    def test_tampered_audio_off_command_reports_mismatch_only(self):
+        doc = make_bundle()
+        _store(self.store)
+        digest = _h("command-preview-launch")
+        (self.store / "sha256" / digest).write_bytes(b"artifact tampered\n")
+        self.assertEqual(
+            verify_artifacts(doc, str(self.store), MARKER),
+            ["sessions[9].command_sha256: artifact %s mismatch" % digest],
+        )
 
 
 class RegistryTest(unittest.TestCase):
@@ -1403,6 +1615,22 @@ class CliTest(unittest.TestCase):
                                     "--audio-off-marker", ""])
         self.assertEqual(code, 2)
         self.assertIn("--audio-off-marker: must be a non-empty string", err)
+
+    def test_short_audio_off_marker_is_usage_error(self):
+        _write_bundle(self.bundle, make_bundle())
+        _store(self.store)
+        code, _out, err = _run_cli([str(self.bundle), "--artifact-root", str(self.store),
+                                    "--audio-off-marker", "LUM-OFF"])
+        self.assertEqual(code, 2)
+        self.assertIn("--audio-off-marker: must be at least 8 characters", err)
+
+    def test_whitespace_audio_off_marker_is_usage_error(self):
+        _write_bundle(self.bundle, make_bundle())
+        _store(self.store)
+        code, _out, err = _run_cli([str(self.bundle), "--artifact-root", str(self.store),
+                                    "--audio-off-marker", "        "])
+        self.assertEqual(code, 2)
+        self.assertIn("--audio-off-marker: must not be only whitespace", err)
 
     def test_bundle_carrying_marker_is_refused_by_structure_check(self):
         doc = make_bundle()

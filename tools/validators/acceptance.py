@@ -5,7 +5,9 @@ whole-document scan for private material. With release=True it also refuses
 open defects and open blocking limitations. artifact_hashes lists the hashes a
 bundle names, and verify_artifacts reads the content-addressed store
 DIR/sha256/<hex>, recomputes every hash, and checks that audio-off session
-journals contain the audio-off marker the operator supplies.
+journals contain the audio-off marker the operator supplies, that audio-off
+commands carry the --no-audio flag, and that the no-audio precedence command
+carries both --enable-audio and --no-audio. Every artifact is read once.
 
 The bundle stores hashes and counts only; the store holds the artifacts. The
 audio-off marker is not part of the bundle: a bundle cannot vouch for its own
@@ -37,6 +39,12 @@ AUDIO_MODES = ("null", "off")
 DISPOSITIONS = ("accepted", "fixed", "open", "waived")
 LIMITATION_STATUSES = ("open", "closed")
 HISTORICAL_KIND = "application-hang"
+EXIT_CODE_MIN = -2147483648
+EXIT_CODE_MAX = 4294967295
+MARKER_MIN_LENGTH = 8
+CHUNK_SIZE = 65536
+NO_AUDIO_TOKEN = b"--no-audio"
+ENABLE_AUDIO_TOKEN = b"--enable-audio"
 PRIVATE_EXTENSIONS = (
     ".wav", ".ogg", ".flac", ".mp3", ".m4a", ".aac", ".wma",
     ".opus", ".aiff", ".aif", ".wem", ".bank", ".fsb", ".snd",
@@ -206,6 +214,10 @@ def marker_problem(marker):
         return "must be a non-empty string"
     if any(ord(char) < 0x20 or ord(char) == 0x7F for char in marker):
         return "must not contain control characters"
+    if not marker.strip():
+        return "must not be only whitespace"
+    if len(marker) < MARKER_MIN_LENGTH:
+        return "must be at least %d characters" % MARKER_MIN_LENGTH
     return None
 
 
@@ -232,6 +244,11 @@ def _check_exit_code(problems, session, here, codes):
     code = session["exit_code"]
     if not _is_int(code):
         problems.append("%s: must be an integer" % path)
+        return
+    if not EXIT_CODE_MIN <= code <= EXIT_CODE_MAX:
+        problems.append(
+            "%s: must be an integer from %d to %d" % (path, EXIT_CODE_MIN, EXIT_CODE_MAX)
+        )
         return
     normalised = code & 0xFFFFFFFF
     if normalised == HANG_EXIT_CODE:
@@ -320,6 +337,8 @@ def _check_sessions(problems, value, path, codes, saves_by_name):
             )
         if audio == "off" and flag is False:
             problems.append("%s: audio_mode off requires no_audio_flag true" % here)
+        if audio == "null" and flag is True:
+            problems.append("%s: audio_mode null requires no_audio_flag false" % here)
         if session["kind"] == "preview" and not (audio == "off" and flag is True):
             problems.append("%s: preview requires audio_mode off and no_audio_flag true" % here)
         if kind == "refusal":
@@ -534,14 +553,23 @@ def _check_limitations(problems, value, path, release):
     first_index = {}
     for index, entry in enumerate(value):
         here = "%s[%d]" % (path, index)
-        if not _keys(problems, entry, here, ("blocks_release", "id", "status")):
+        if not _keys(problems, entry, here, ("blocks_release", "closure_sha256", "id", "status")):
             continue
         _check_id(problems, entry["id"], _join(here, "id"), seen)
         if isinstance(entry["id"], str):
             first_index.setdefault(entry["id"], index)
         status = entry["status"]
+        closure = entry["closure_sha256"]
+        closure_path = _join(here, "closure_sha256")
         if status not in LIMITATION_STATUSES:
             problems.append("%s: must be open or closed" % _join(here, "status"))
+        elif status == "closed":
+            if closure is None:
+                problems.append("%s: closed limitation needs closure evidence" % closure_path)
+            else:
+                _hex(problems, closure, closure_path)
+        elif closure is not None:
+            problems.append("%s: open limitation must have a null closure_sha256" % closure_path)
         if not isinstance(entry["blocks_release"], bool):
             problems.append("%s: must be true or false" % _join(here, "blocks_release"))
         elif release and status == "open" and entry["blocks_release"] is True:
@@ -699,6 +727,10 @@ def artifact_hashes(doc):
     disabled = doc.get("disabled_backend")
     if isinstance(disabled, dict):
         add(disabled.get("proof_sha256"), "disabled_backend.proof_sha256")
+    limitations = doc.get("limitations")
+    for index, entry in enumerate(limitations if isinstance(limitations, list) else []):
+        if isinstance(entry, dict):
+            add(entry.get("closure_sha256"), "limitations[%d].closure_sha256" % index)
     return refs
 
 
@@ -707,28 +739,111 @@ def artifact_count(doc):
     return len({digest for digest, _location in artifact_hashes(doc)})
 
 
-def _file_sha256(path):
+# A whole-token match: the flag must not be preceded or followed by an ASCII letter,
+# digit or '-'. Start and end of file count as boundaries.
+_TOKEN_BEFORE = rb"(?<![A-Za-z0-9-])"
+_TOKEN_AFTER = rb"(?![A-Za-z0-9-])"
+
+
+def _scan_window(window, base, eof, patterns, found):
+    """Record each pattern with a usable match in WINDOW, which starts at file offset BASE.
+
+    A match that touches the start of a later window (base > 0) is skipped, because an
+    earlier window already decided it. A match that touches the end of this window is
+    skipped unless eof, because the next window decides it.
+    """
+    size = len(window)
+    for needle, pattern in patterns:
+        if needle in found:
+            continue
+        for match in pattern.finditer(window):
+            start, end = match.span()
+            if start == 0 and base > 0:
+                continue
+            if end == size and not eof:
+                continue
+            found.add(needle)
+            break
+
+
+def _scan_file(path, needles=(), tokens=()):
+    """Hash PATH and find NEEDLES and TOKENS in one pass over the file, in 64 KiB chunks.
+
+    NEEDLES are byte strings that count wherever they occur. TOKENS are byte strings
+    that count only as whole tokens (see _TOKEN_BEFORE and _TOKEN_AFTER). Returns
+    (sha256 hex digest, set of the needles and tokens that were found).
+
+    Each window keeps its last reach bytes, one more than the longest pattern, so a
+    match straddling a chunk boundary is seen whole and both of its neighbouring bytes
+    are read.
+    """
+    patterns = [(needle, re.compile(re.escape(needle))) for needle in needles]
+    patterns += [
+        (token, re.compile(_TOKEN_BEFORE + re.escape(token) + _TOKEN_AFTER)) for token in tokens
+    ]
+    reach = max((len(needle) for needle, _pattern in patterns), default=0) + 1
     digest = hashlib.sha256()
+    found = set()
+    carry = b""
+    base = 0
     with open(path, "rb") as handle:
-        for chunk in iter(lambda: handle.read(65536), b""):
+        for chunk in iter(lambda: handle.read(CHUNK_SIZE), b""):
             digest.update(chunk)
-    return digest.hexdigest()
+            if patterns:
+                window = carry + chunk
+                _scan_window(window, base, False, patterns, found)
+                keep = window[-reach:]
+                base += len(window) - len(keep)
+                carry = keep
+        if patterns:
+            _scan_window(carry, base, True, patterns, found)
+    return digest.hexdigest(), found
+
+
+def _want(wanted, digest, needle):
+    if isinstance(digest, str):
+        wanted.setdefault(digest, set()).add(needle)
+
+
+def _verified(status, digest):
+    return isinstance(digest, str) and status.get(digest) is True
 
 
 def verify_artifacts(doc, root, marker):
     """Return problems for the content-addressed store at ROOT (ROOT/sha256/<hex>).
 
-    Every artifact the bundle names must exist and hash to its name. Each
-    audio-off session journal must contain MARKER, the operator-supplied
-    audio-off marker, as UTF-8 bytes.
+    Every artifact the bundle names must exist and hash to its name. Each artifact is
+    read once. For each audio-off session, the journal must contain MARKER, the
+    operator-supplied audio-off marker, as UTF-8 bytes, and the command must contain
+    the --no-audio token. The command of startup_checks.no_audio_precedence_session
+    must contain the --enable-audio and --no-audio tokens. Commands and journals are
+    checked only when their hash verified.
     """
     if not os.path.isdir(root):
         return ["%s: artifact root is not a directory" % root]
     reason = marker_problem(marker)
     if reason is not None:
         return ["audio-off marker: %s" % reason]
+    marker_bytes = marker.encode("utf-8")
+    sessions = doc.get("sessions") if isinstance(doc.get("sessions"), list) else []
+    sessions_by_id = _index_by_name(sessions, "id")
+    plain = {}
+    tokens = {}
+    for session in sessions:
+        if not isinstance(session, dict) or session.get("audio_mode") != "off":
+            continue
+        _want(plain, session.get("journal_sha256"), marker_bytes)
+        _want(tokens, session.get("command_sha256"), NO_AUDIO_TOKEN)
+    startup = doc.get("startup_checks")
+    second_id = startup.get("no_audio_precedence_session") if isinstance(startup, dict) else None
+    second = sessions_by_id.get(second_id) if isinstance(second_id, str) else None
+    if second is not None:
+        _want(tokens, second.get("command_sha256"), ENABLE_AUDIO_TOKEN)
+        _want(tokens, second.get("command_sha256"), NO_AUDIO_TOKEN)
+
     problems = []
     status = {}
+    found = {}
     for digest, location in artifact_hashes(doc):
         if digest in status:
             continue
@@ -736,26 +851,40 @@ def verify_artifacts(doc, root, marker):
         if not os.path.isfile(full):
             problems.append("%s: artifact %s missing" % (location, digest))
             status[digest] = False
-        elif _file_sha256(full) != digest:
+            continue
+        actual, seen = _scan_file(
+            full, tuple(sorted(plain.get(digest, ()))), tuple(sorted(tokens.get(digest, ())))
+        )
+        if actual != digest:
             problems.append("%s: artifact %s mismatch" % (location, digest))
             status[digest] = False
         else:
             status[digest] = True
+            found[digest] = seen
 
-    needle = marker.encode("utf-8")
-    sessions = doc.get("sessions")
-    for index, session in enumerate(sessions if isinstance(sessions, list) else []):
+    for index, session in enumerate(sessions):
         if not isinstance(session, dict) or session.get("audio_mode") != "off":
             continue
         journal = session.get("journal_sha256")
-        if not isinstance(journal, str) or status.get(journal) is not True:
-            continue
-        with open(os.path.join(root, "sha256", journal), "rb") as handle:
-            data = handle.read()
-        if needle not in data:
+        if _verified(status, journal) and marker_bytes not in found[journal]:
             problems.append(
                 "sessions[%d].journal_sha256: audio-off journal lacks the audio-off marker"
                 % index
+            )
+        command = session.get("command_sha256")
+        if _verified(status, command) and NO_AUDIO_TOKEN not in found[command]:
+            problems.append(
+                "sessions[%d].command_sha256: audio-off command lacks --no-audio" % index
+            )
+    if second is not None and _verified(status, second.get("command_sha256")):
+        command = second["command_sha256"]
+        if ENABLE_AUDIO_TOKEN not in found[command]:
+            problems.append(
+                "startup_checks.no_audio_precedence_session: command lacks --enable-audio"
+            )
+        if NO_AUDIO_TOKEN not in found[command]:
+            problems.append(
+                "startup_checks.no_audio_precedence_session: command lacks --no-audio"
             )
     return problems
 

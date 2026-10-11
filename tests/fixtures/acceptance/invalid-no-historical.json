@@ -30,11 +30,13 @@
   "limitations": [
     {
       "blocks_release": true,
+      "closure_sha256": "1ea8ac0d6d166ab3fea01b31d71ad06187d3ec8c7db363944d2f8936d77f7e12",
       "id": "finite-residency",
       "status": "closed"
     },
     {
       "blocks_release": true,
+      "closure_sha256": "1120caa7a4a8345da2da3e5dcb072b5ecdcb4170d63ad13fcffb682b4bed4fdf",
       "id": "distant-cave-edit-omitted",
       "status": "closed"
     }
@@ -240,7 +242,7 @@
     },
     {
       "audio_mode": "off",
-      "command_sha256": "fc12056ed7b4348947905069de24f7247ed272e15a1abc55e9ecf4a0d32b4f5e",
+      "command_sha256": "41ba85f298184b5d2a433808773fa13fb1d1a20e63407407180c8caaee181e4f",
       "exit_code": 0,
       "id": "preview-launch",
       "journal_sha256": "cb66f68f5b8fd6c525f0ebc03afac6a1a0cc967dd12235aa5fcfeafe61019a56",
@@ -250,7 +252,7 @@
     },
     {
       "audio_mode": "off",
-      "command_sha256": "7f7dd6e3eb834386b4037a81596498bd37b8c053e9e6259b8084289a1963d73a",
+      "command_sha256": "a42f0db7d1594672b8560f5293e4a68cc8155603a00d60205ffa251aa68a5b5a",
       "exit_code": 0,
       "id": "restart-no-audio",
       "journal_sha256": "1bc82d05c12e2a29bb331d774bf25a3877da53a61bef2d766ea291d50df80bb9",
