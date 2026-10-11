@@ -17,6 +17,7 @@ Exit status: 0 when everything passes, 1 when a check fails, 2 for usage errors
 import argparse
 import hashlib
 import json
+import math
 import re
 import sys
 from decimal import Decimal
@@ -78,8 +79,12 @@ ROOT_KEYS = {
     "files",
 }
 ROOT_TRIMMED_REQUIRED = {"schema", "trimmed", "asset", "engine_revision", "leaf_fitter", "files"}
+DIGEST_OBJECT_KEYS = {"size", "sha256"}
+NESTED_DIGEST_OBJECTS = ("processor", "source_manifest", "converter_script")
 LEAF_FITTER_KEYS = {"size", "sha256", "source", "result", "command", "lod_policy"}
 RESULT_KEYS = {"leaf_surfaces", "triangles", "maximum_relative_fit_error"}
+ENTRY_REQUIRED_KEYS = {"path", "size", "sha256"}
+ENTRY_OPTIONAL_KEYS = {"vertices", "triangles", "bounding_sphere"}
 
 BEGIN_MARKER = "<!-- accounting:begin -->"
 END_MARKER = "<!-- accounting:end -->"
@@ -114,6 +119,57 @@ def _is_int(value):
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _is_sha256(value):
+    return isinstance(value, str) and _SHA_RE.fullmatch(value) is not None
+
+
+def _is_string_list(value):
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def _is_string_map(value):
+    return isinstance(value, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in value.items())
+
+
+def _is_command_list(value):
+    return isinstance(value, list) and all(_is_string_list(command) for command in value)
+
+
+def _is_finite_number(item):
+    if isinstance(item, bool):
+        return False
+    if isinstance(item, Decimal):
+        return item.is_finite()
+    return isinstance(item, (int, float)) and math.isfinite(item)
+
+
+def _check_bounding_sphere(where, value, problems):
+    """Require bounding_sphere to be four finite numbers; return True when it is."""
+    ok = isinstance(value, list) and len(value) == 4 and all(
+        _is_finite_number(item) for item in value
+    )
+    if not ok:
+        problems.append("%s: bounding_sphere must be four finite numbers" % where)
+    return ok
+
+
+def _check_digest_object(where, obj, problems):
+    """Key-check and type-check a {size, sha256} object; return True when it is clean."""
+    try:
+        schema.check_keys(obj, DIGEST_OBJECT_KEYS, set(), where)
+    except SchemaError as exc:
+        problems.append(str(exc))
+        return False
+    ok = True
+    if not _is_int(obj["size"]) or obj["size"] < 0:
+        problems.append("%s.size must be a non-negative integer" % where)
+        ok = False
+    if not _is_sha256(obj["sha256"]):
+        problems.append("%s.sha256 must be 64 lowercase hex digits" % where)
+        ok = False
+    return ok
+
+
 def _as_decimal(value):
     if isinstance(value, bool) or not isinstance(value, (int, Decimal)):
         return None
@@ -131,7 +187,7 @@ def _mesh_identity(path):
 def _parse_entry(label, index, entry, problems):
     where = "%s: files[%d]" % (label, index)
     try:
-        schema.check_keys(entry, {"path", "size", "sha256"}, {"vertices", "triangles", "bounding_sphere"}, where)
+        schema.check_keys(entry, ENTRY_REQUIRED_KEYS, ENTRY_OPTIONAL_KEYS, where)
     except SchemaError as exc:
         problems.append(str(exc))
         return None
@@ -150,6 +206,8 @@ def _parse_entry(label, index, entry, problems):
             if not _is_int(entry.get(key)) or entry[key] < 0:
                 problems.append("%s: %s must be a non-negative integer" % (path, key))
                 return None
+    if "bounding_sphere" in entry and not _check_bounding_sphere(path, entry["bounding_sphere"], problems):
+        return None
     return entry
 
 
@@ -178,7 +236,7 @@ def _check_root_keys(label, receipt, trimmed, problems):
         problems.append(str(exc))
 
 
-def _check_leaf_fitter(label, receipt, problems):
+def _check_leaf_fitter(label, receipt, trimmed, problems):
     if "leaf_fitter" not in receipt:
         return
     leaf = receipt["leaf_fitter"]
@@ -186,10 +244,21 @@ def _check_leaf_fitter(label, receipt, problems):
     if not isinstance(leaf, dict):
         problems.append("%s: not an object" % where)
         return
+    required = {"result"} if trimmed else LEAF_FITTER_KEYS
     try:
-        schema.check_keys(leaf, {"result"}, LEAF_FITTER_KEYS - {"result"}, where)
+        schema.check_keys(leaf, required, LEAF_FITTER_KEYS - required, where)
     except SchemaError as exc:
         problems.append(str(exc))
+    if "size" in leaf and (not _is_int(leaf["size"]) or leaf["size"] < 0):
+        problems.append("%s.size must be a non-negative integer" % where)
+    if "sha256" in leaf and not _is_sha256(leaf["sha256"]):
+        problems.append("%s.sha256 must be 64 lowercase hex digits" % where)
+    if "source" in leaf:
+        _check_digest_object(where + ".source", leaf["source"], problems)
+    if "command" in leaf and not _is_string_list(leaf["command"]):
+        problems.append("%s.command must be a list of strings" % where)
+    if "lod_policy" in leaf and not isinstance(leaf["lod_policy"], str):
+        problems.append("%s.lod_policy must be a string" % where)
     if "result" not in leaf:
         return
     result = leaf["result"]
@@ -208,13 +277,14 @@ def _check_leaf_fitter(label, receipt, problems):
         elif value != expected:
             problems.append("%s: leaf_fitter.result.%s %d, expected %d" % (label, key, value, expected))
     residual = _as_decimal(result["maximum_relative_fit_error"])
-    if residual is None:
-        problems.append("%s: leaf_fitter.result.maximum_relative_fit_error must be a number" % label)
+    shown = result["maximum_relative_fit_error"]
+    name = "%s: leaf_fitter.result.maximum_relative_fit_error" % label
+    if residual is None or not residual.is_finite():
+        problems.append("%s must be a finite number" % name)
+    elif residual < 0:
+        problems.append("%s %s is negative" % (name, shown))
     elif residual > RESIDUAL_BOUND:
-        problems.append(
-            "%s: leaf_fitter.result.maximum_relative_fit_error %s exceeds bound %s"
-            % (label, result["maximum_relative_fit_error"], RESIDUAL_BOUND)
-        )
+        problems.append("%s %s exceeds bound %s" % (name, shown, RESIDUAL_BOUND))
 
 
 def _check_manifest(manifest_label, manifest, problems):
@@ -231,6 +301,20 @@ def _check_manifest(manifest_label, manifest, problems):
         if not isinstance(path, str):
             problems.append("%s: files[%d] has no string path" % (manifest_label, index))
             continue
+        where = "%s: files[%d]" % (manifest_label, index)
+        try:
+            schema.check_keys(entry, ENTRY_REQUIRED_KEYS, ENTRY_OPTIONAL_KEYS, where)
+        except SchemaError as exc:
+            problems.append(str(exc))
+        if "size" in entry and not (_is_int(entry["size"]) and entry["size"] >= 0):
+            problems.append("%s: size must be a non-negative integer" % where)
+        if "sha256" in entry and not _is_sha256(entry["sha256"]):
+            problems.append("%s: sha256 must be 64 lowercase hex digits" % where)
+        for key in ("vertices", "triangles"):
+            if key in entry and not (_is_int(entry[key]) and entry[key] >= 0):
+                problems.append("%s: %s must be a non-negative integer" % (where, key))
+        if "bounding_sphere" in entry:
+            _check_bounding_sphere(where, entry["bounding_sphere"], problems)
         if path in entries:
             problems.append("%s: duplicate manifest path %s" % (manifest_label, path))
             continue
@@ -262,6 +346,13 @@ def validate(receipt_label, receipt, receipt_bytes, manifest_label, manifest):
         problems.append("%s: trimmed must be a boolean" % receipt_label)
         trimmed = False
     _check_root_keys(receipt_label, receipt, trimmed, problems)
+    for name in NESTED_DIGEST_OBJECTS:
+        if name in receipt:
+            _check_digest_object("%s: %s" % (receipt_label, name), receipt[name], problems)
+    if "command_roots" in receipt and not _is_string_map(receipt["command_roots"]):
+        problems.append("%s: command_roots must map strings to strings" % receipt_label)
+    if "commands" in receipt and not _is_command_list(receipt["commands"]):
+        problems.append("%s: commands must be a list of string lists" % receipt_label)
     if receipt.get("engine_revision") != ENGINE_REVISION:
         problems.append(
             "%s: engine_revision %s does not match pinned %s"
@@ -304,7 +395,7 @@ def validate(receipt_label, receipt, receipt_bytes, manifest_label, manifest):
             if row["size"] != TEXTURE_FILE:
                 problems.append("%s: size %d, expected %d" % (path, row["size"], TEXTURE_FILE))
 
-    _check_leaf_fitter(receipt_label, receipt, problems)
+    _check_leaf_fitter(receipt_label, receipt, trimmed, problems)
 
     entries = _check_manifest(manifest_label, manifest, problems)
     for row in rows:

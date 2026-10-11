@@ -78,12 +78,19 @@ class ReceiptTestCase(unittest.TestCase):
         """A full-format receipt: the fixture without 'trimmed' plus the other required root keys."""
         data = copy.deepcopy(self.fixture)
         data.pop("trimmed")
-        data["license"] = "LICENSE.txt"
-        data["processor"] = {"path": "asset_processor", "sha256": "0" * 64}
-        data["source_manifest"] = "source-manifest.json"
-        data["converter_script"] = {"path": "tools/convert_tree_small_02.py", "sha256": "0" * 64, "size": 1}
-        data["command_roots"] = ["repo"]
-        data["commands"] = []
+        data["license"] = "https://polyhaven.com/license"
+        data["processor"] = {"size": 1, "sha256": "0" * 64}
+        data["source_manifest"] = {"size": 1, "sha256": "1" * 64}
+        data["converter_script"] = {"size": 1, "sha256": "2" * 64}
+        data["leaf_fitter"].update(
+            size=1,
+            sha256="3" * 64,
+            source={"size": 1, "sha256": "4" * 64},
+            command=["fit_leaf_cards", "scratch/source-leaves.lmesh", "output/leaves.lmesh"],
+            lod_policy="Retain all source leaf surfaces at each mesh LOD",
+        )
+        data["command_roots"] = {"source": "verified source pack/source", "output": "runtime pack"}
+        data["commands"] = [["source/tree_small_02_2k.gltf", "output/tree.lmesh", "--primitive", "0"]]
         return data
 
 
@@ -113,9 +120,8 @@ class PositiveTests(ReceiptTestCase):
         self.assertIsNone(obj["source_receipt"]["sha256"])
         self.assertEqual(resource_accounting.validate(str(target), obj), [])
 
-    def test_emit_json_matches_committed_evidence_when_present(self):
-        if not EVIDENCE.exists():
-            self.skipTest("docs/evidence/tree-small-02-resource-accounting.json is not generated yet")
+    def test_emit_json_matches_committed_evidence(self):
+        self.assertTrue(EVIDENCE.exists(), "docs/evidence/tree-small-02-resource-accounting.json is missing")
         target = self.dir / "accounting.json"
         code, _, err = _run(["--receipt", str(FIXTURE), "--manifest", str(MANIFEST), "--emit-json", str(target)])
         self.assertEqual(code, 0, err)
@@ -164,6 +170,40 @@ class NegativeTests(ReceiptTestCase):
 
     def test_unknown_file_key(self):
         self._expect_failure(lambda d: self._entry(d, LEAF_BRANCHES_LOD0).update(extra=1), "unknown key 'extra'")
+
+    def test_unknown_key_in_leaf_fitter_source(self):
+        self._expect_failure(
+            lambda d: d["leaf_fitter"].update(source={"size": 1, "sha256": "0" * 64, "extra": 1}),
+            "unknown key 'extra'",
+        )
+
+    def test_leaf_fitter_source_missing_sha256(self):
+        self._expect_failure(lambda d: d["leaf_fitter"].update(source={"size": 1}), "missing key 'sha256'")
+
+    def test_unknown_key_in_manifest_member(self):
+        def mutate(manifest):
+            for entry in manifest["files"]:
+                if entry["path"] == LEAF_BRANCHES_LOD0:
+                    entry["extra"] = 1
+
+        manifest = self._manifest_with(mutate)
+        code, out, err = _run(["--receipt", str(FIXTURE), "--manifest", str(manifest)])
+        self.assertEqual(code, 1, err)
+        self.assertIn("unknown key 'extra'", err)
+        self.assertEqual(out, "")
+
+    def test_negative_residual_refused(self):
+        self._expect_failure(
+            lambda d: d["leaf_fitter"]["result"].update(maximum_relative_fit_error=-1),
+            "maximum_relative_fit_error -1 is negative",
+        )
+
+    def test_residual_just_above_bound_refused(self):
+        self._expect_failure(
+            lambda d: d["leaf_fitter"]["result"].update(maximum_relative_fit_error=0.2000001),
+            "maximum_relative_fit_error 0.2000001 exceeds bound 0.20",
+        )
+
 
     def test_missing_path_in_manifest(self):
         manifest = self._manifest_with(lambda m: m.update(files=[e for e in m["files"] if e["path"] != LEAF_LOD1]))
@@ -333,6 +373,41 @@ class AccountingValidatorTests(ReceiptTestCase):
                 obj["textures"][0]["path"] = bad
                 problems = resource_accounting.validate("acc.json", obj)
                 self.assertTrue(any("path" in p for p in problems), problems)
+
+    def test_windows_reserved_device_name_rejected(self):
+        for bad in ("data/CON.lmesh", "data/com1.tar.gz", "data/Lpt9/x.ltex"):
+            with self.subTest(path=bad):
+                obj = self._accounting()
+                obj["textures"][0]["path"] = bad
+                problems = resource_accounting.validate("acc.json", obj)
+                self.assertTrue(any("reserved device name" in p for p in problems), problems)
+
+    def test_windows_invalid_characters_rejected(self):
+        for bad in ("data/x?.ltex", "data/a<b.ltex", 'data/a"b.ltex', "data/a|b.ltex", "data/a\x01b.ltex"):
+            with self.subTest(path=bad):
+                obj = self._accounting()
+                obj["textures"][0]["path"] = bad
+                problems = resource_accounting.validate("acc.json", obj)
+                self.assertTrue(any("invalid on Windows" in p for p in problems), problems)
+
+    def test_trailing_dot_or_space_component_rejected(self):
+        for bad in ("data/x.ltex.", "data/x.ltex ", "data/models /x.ltex"):
+            with self.subTest(path=bad):
+                obj = self._accounting()
+                obj["textures"][0]["path"] = bad
+                problems = resource_accounting.validate("acc.json", obj)
+                self.assertTrue(any("dot or space" in p for p in problems), problems)
+
+    def test_case_only_alias_duplicate_rejected(self):
+        obj = self._accounting()
+        alias = copy.deepcopy(obj["meshes"][0])
+        alias["path"] = alias["path"].upper()
+        obj["meshes"].append(alias)
+        obj["totals"]["mesh_file_bytes"] += alias["file_bytes"]
+        obj["totals"]["mesh_triangles_by_lod"]["lod%d" % alias["lod"]] += alias["triangles"]
+        problems = resource_accounting.validate("acc.json", obj)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("duplicate path %s" % alias["path"], problems[0])
 
     def test_malformed_check_json_is_a_controlled_failure(self):
         for bad in ([], {}):

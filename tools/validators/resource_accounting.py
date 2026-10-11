@@ -18,6 +18,13 @@ SCHEMA = "luminumbra.game.resource-accounting.v1"
 _HEX40 = re.compile(r"[0-9a-f]{40}")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 
+_WINDOWS_RESERVED = frozenset(
+    ["CON", "PRN", "AUX", "NUL"]
+    + ["COM%d" % number for number in range(1, 10)]
+    + ["LPT%d" % number for number in range(1, 10)]
+)
+_WINDOWS_INVALID_CHARS = frozenset('<>:"|?*')
+
 _TOP_KEYS = {
     "schema",
     "asset",
@@ -74,17 +81,25 @@ def _is_sha(value, pattern):
 
 
 def _path_problem(value):
-    """Return a reason the value is not a portable relative path, or None."""
+    """Return a reason the value is not a portable Windows-safe relative path, or None."""
     if not isinstance(value, str) or not value:
         return "must be a non-empty string"
     if "\\" in value:
         return "must not contain a backslash"
     if value.startswith("/"):
         return "must not start with a slash"
-    if ":" in value or any(ord(char) < 32 or ord(char) == 127 for char in value):
-        return "must be a portable relative path"
-    if any(segment in ("", ".", "..") for segment in value.split("/")):
+    segments = value.split("/")
+    if any(segment in ("", ".", "..") for segment in segments):
         return "must not contain empty, '.' or '..' segments"
+    if any(char in _WINDOWS_INVALID_CHARS or ord(char) < 32 or ord(char) == 127 for char in value):
+        return "must not contain characters invalid on Windows or control characters"
+    for segment in segments:
+        if segment.endswith(".") or segment.endswith(" "):
+            return "must not end a component with a dot or space (%r)" % segment
+    for segment in segments:
+        stem = segment.split(".", 1)[0].casefold()
+        if stem.upper() in _WINDOWS_RESERVED:
+            return "must not use the Windows reserved device name %r" % segment
     return None
 
 
@@ -254,9 +269,10 @@ def validate(path, obj, ctx=None):
         row_path = row["path"]
         if not isinstance(row_path, str):
             continue
-        if row_path in seen:
-            problems.append("%s: duplicate path %s" % (path, row_path))
-        seen.add(row_path)
+        key = row_path.casefold()
+        if key in seen:
+            problems.append("%s: duplicate path %s (paths are compared case-insensitively)" % (path, row_path))
+        seen.add(key)
 
     _validate_totals(path, obj["totals"], meshes, textures, problems)
     validate_measured(path, obj["measured"], problems)
