@@ -1,0 +1,26 @@
+{
+  "schema": "luminumbra.game.workload.v1",
+  "id": "surface-flight",
+  "kind": "camera-traversal",
+  "description": "Engine reference surface flight, 60 s at 30 Hz along +X",
+  "preset": "default",
+  "seed": 424242,
+  "duration_seconds": 60,
+  "tick_rate": 30,
+  "speed_mps": 8,
+  "pins": {
+    "preset_identity": "026f24207a8ffc7e",
+    "content_identity": "16636010052247870746"
+  },
+  "status": "pinned",
+  "points": [
+    [8, 80, 8, 0, -6],
+    [248, 80, 8, 0, -6],
+    [488, 80, 8, 0, -6]
+  ],
+  "events": [],
+  "native": {
+    "commands": "docs/performance-workloads.md",
+    "receipt": null
+  }
+}
