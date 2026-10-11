@@ -375,7 +375,7 @@ class CleanTreeTest(_TreeTest):
         self.assertIn("notes/dup.json: absolute local path", lines)
 
     def test_escaped_path_inside_deep_nesting_refused_outside_strict_zones(self):
-        text = "[" * 2000 + '"C:' + "\\u005c" + 'Users' + "\\u005c" + 'Alice"' + "]" * 2000 + "\n"
+        text = "[" * 200000 + '"C:' + "\\u005c" + 'Users' + "\\u005c" + 'Alice"' + "]" * 200000 + "\n"
         self.write("notes/deep.json", text)
         code, lines = self.run_guard()
         self.assertEqual(code, 1)
@@ -394,7 +394,7 @@ class CleanTreeTest(_TreeTest):
         self.assertEqual(lines, ["public tree ok (1 files)"])
 
     def test_deep_json_nesting_reported_and_scan_continues(self):
-        self.write("content/deep.json", b"[" * 2000 + b"]" * 2000 + b"\n")
+        self.write("content/deep.json", b"[" * 200000 + b"]" * 200000 + b"\n")
         self.write("content/bad.wav", b"plain\n")
         code, lines = self.run_guard()
         self.assertEqual(code, 1)
@@ -402,7 +402,7 @@ class CleanTreeTest(_TreeTest):
         self.assertIn("content/bad.wav: forbidden extension .wav", lines)
 
     def test_deep_json_outside_strict_zone_does_not_crash(self):
-        self.write("notes/deep.json", b"[" * 2000 + b"]" * 2000 + b"\n")
+        self.write("notes/deep.json", b"[" * 200000 + b"]" * 200000 + b"\n")
         code, lines = self.run_guard()
         self.assertEqual(code, 0)
         self.assertEqual(lines, ["public tree ok (1 files)"])
