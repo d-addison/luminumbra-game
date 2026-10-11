@@ -16,6 +16,8 @@ import validate_content  # noqa: E402
 from validators import discover  # noqa: E402
 
 SCHEMA = "test.game.thing.v1"
+EVIDENCE_SCHEMA = "luminumbra.game-pack-download-verification.v1"
+REAL_EVIDENCE = Path(__file__).resolve().parent.parent / "docs" / "evidence" / "tree-small-02-download-verification.json"
 
 
 def _accept(path, obj, ctx):
@@ -72,9 +74,7 @@ class SchemaEntryTest(_ContentTest):
     def test_unknown_schema_refused(self):
         self.write("content/presets/a.json", '{"schema": "nope.v1"}\n')
         problems = self.validate()
-        self.assertEqual(len(problems), 1)
-        self.assertTrue(problems[0].startswith("content/presets/a.json: "))
-        self.assertIn("unknown schema", problems[0])
+        self.assertEqual(problems, ["content/presets/a.json: schema 'nope.v1' is not registered"])
 
     def test_missing_schema_refused(self):
         self.write("content/presets/a.json", '{"value": 1}\n')
@@ -184,6 +184,82 @@ class TreeAndContextTest(_ContentTest):
         schemas, globs = discover()
         self.assertIsInstance(schemas, dict)
         self.assertIsInstance(globs, dict)
+
+
+class EvidenceZoneTest(_ContentTest):
+    """docs/evidence JSON goes through the same registry rules, using the real registry."""
+
+    def registry_problems(self):
+        return validate_content.validate_tree(str(self.root), False, False)
+
+    def test_real_download_verification_record_passes(self):
+        self.write("docs/evidence/tree-small-02-download-verification.json", REAL_EVIDENCE.read_bytes())
+        self.assertEqual(self.registry_problems(), [])
+
+    def test_unknown_evidence_schema_refused(self):
+        self.write("docs/evidence/x.json", '{"schema": "luminumbra.nope.v1"}\n')
+        self.assertEqual(
+            self.registry_problems(),
+            ["docs/evidence/x.json: schema 'luminumbra.nope.v1' is not registered"],
+        )
+
+    def test_future_version_of_registered_schema_refused(self):
+        future = EVIDENCE_SCHEMA[: -len("v1")] + "v999"
+        self.write("docs/evidence/x.json", '{"schema": "%s", "verified_on": "2026-10-10"}\n' % future)
+        self.assertEqual(
+            self.registry_problems(),
+            [f"docs/evidence/x.json: schema '{future}' is not registered"],
+        )
+
+    def test_registered_schema_with_missing_key_refused(self):
+        self.write("docs/evidence/x.json", '{"schema": "%s", "verified_on": "2026-09-07"}\n' % EVIDENCE_SCHEMA)
+        problems = self.registry_problems()
+        self.assertIn("docs/evidence/x.json: missing key 'method'", problems)
+
+    def test_registered_schema_with_null_key_refused(self):
+        self.write("docs/evidence/x.json", '{"schema": "%s", "method": null}\n' % EVIDENCE_SCHEMA)
+        problems = self.registry_problems()
+        self.assertIn("docs/evidence/x.json: key 'method' is null", problems)
+
+    def test_evidence_top_level_must_be_an_object(self):
+        self.write("docs/evidence/x.json", "[1]\n")
+        self.assertEqual(self.registry_problems(), ["docs/evidence/x.json: top level must be a JSON object"])
+
+    def test_evidence_without_schema_key_refused(self):
+        self.write("docs/evidence/x.json", '{"verified_on": "2026-09-07"}\n')
+        self.assertEqual(self.registry_problems(), ["docs/evidence/x.json: missing schema key"])
+
+    def test_non_json_evidence_file_is_left_to_the_public_guard(self):
+        self.write("docs/evidence/notes.md", "hi\n")
+        self.assertEqual(self.registry_problems(), [])
+
+    def test_evidence_only_tree_is_validated_by_main(self):
+        self.write("docs/evidence/x.json", '{"schema": "luminumbra.nope.v1"}\n')
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = validate_content.main(["--root", str(self.root)])
+        self.assertEqual(code, 1)
+        self.assertIn("docs/evidence/x.json: schema 'luminumbra.nope.v1' is not registered", out.getvalue().splitlines())
+
+    def test_deep_json_nesting_reported_and_other_files_still_checked(self):
+        self.write("content/presets/deep.json", b"[" * 2000 + b"]" * 2000)
+        self.write("docs/evidence/bad.json", '{"schema": "luminumbra.nope.v1"}\n')
+        problems = self.registry_problems()
+        self.assertIn("content/presets/deep.json: json nesting is too deep", problems)
+        self.assertIn("docs/evidence/bad.json: schema 'luminumbra.nope.v1' is not registered", problems)
+
+    def test_deep_json_nesting_in_evidence_reported(self):
+        self.write("docs/evidence/deep.json", b"[" * 2000 + b"]" * 2000)
+        self.assertEqual(self.registry_problems(), ["docs/evidence/deep.json: json nesting is too deep"])
+
+    def test_evidence_symlink_root_is_refused(self):
+        (self.root / "docs").mkdir()
+        (self.root / "elsewhere").mkdir()
+        try:
+            os.symlink(self.root / "elsewhere", self.root / "docs" / "evidence")
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable on this platform")
+        self.assertEqual(self.registry_problems(), ["docs/evidence: symlink or non-directory is not allowed"])
 
 
 class MainTest(_ContentTest):

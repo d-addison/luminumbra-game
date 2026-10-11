@@ -348,6 +348,79 @@ class CleanTreeTest(_TreeTest):
         self.assertEqual(code, 1)
         self.assertIn("tests/sample.md: credential-shaped string", lines)
 
+    def test_escaped_windows_path_in_json_string_refused(self):
+        # Literal backslash-u escapes: the file text never contains the flagged shape.
+        self.write("docs/esc0.json", '{"a": "C:' + "\\u005c" + 'Users' + "\\u005c" + 'Alice"}\n')
+        code, lines = self.run_guard()
+        self.assertEqual(code, 1)
+        self.assertIn("docs/esc0.json: absolute local path", lines)
+
+    def test_escaped_slash_windows_path_in_json_string_refused(self):
+        self.write("docs/esc1.json", '{"a": "C:' + "\\/" + 'Users' + "\\/" + 'Alice"}\n')
+        code, lines = self.run_guard()
+        self.assertEqual(code, 1)
+        self.assertIn("docs/esc1.json: absolute local path", lines)
+
+    def test_escaped_windows_path_in_json_key_refused(self):
+        self.write("docs/esc2.json", '{"C:' + "\\u005c" + 'Users": 1}\n')
+        code, lines = self.run_guard()
+        self.assertEqual(code, 1)
+        self.assertIn("docs/esc2.json: absolute local path", lines)
+
+    def test_escaped_credential_in_json_string_refused(self):
+        self.write("notes/esc3.json", '{"a": "' + "\\u0067" + 'hp_' + 'A' * 24 + '"}\n')
+        code, lines = self.run_guard()
+        self.assertEqual(code, 1)
+        self.assertIn("notes/esc3.json: credential-shaped string", lines)
+
+    def test_json_without_path_shapes_passes(self):
+        self.write("content/presets/ok.json", '{"a": "C:' + "\\u005c" + 'Games"}\n')
+        code, lines = self.run_guard()
+        self.assertEqual(code, 0)
+        self.assertEqual(lines, ["public tree ok (1 files)"])
+
+    def test_deep_json_nesting_reported_and_scan_continues(self):
+        self.write("content/deep.json", b"[" * 2000 + b"]" * 2000 + b"\n")
+        self.write("content/bad.wav", b"plain\n")
+        code, lines = self.run_guard()
+        self.assertEqual(code, 1)
+        self.assertIn("content/deep.json: json nesting is too deep", lines)
+        self.assertIn("content/bad.wav: forbidden extension .wav", lines)
+
+    def test_deep_json_outside_strict_zone_does_not_crash(self):
+        self.write("notes/deep.json", b"[" * 2000 + b"]" * 2000 + b"\n")
+        code, lines = self.run_guard()
+        self.assertEqual(code, 0)
+        self.assertEqual(lines, ["public tree ok (1 files)"])
+
+    def test_archive_and_binary_signatures_refused_literal_bytes(self):
+        cases = {
+            "zip-eocd.dat": b"PK\x05\x06" + b"\x00" * 18,
+            "zip-spanned.dat": b"PK\x07\x08" + b"\x00" * 12,
+            "sevenzip.dat": b"7z\xbc\xaf\x27\x1c" + b"\x00" * 6,
+            "xz.dat": b"\xfd7zXZ\x00" + b"\x00" * 8,
+            "gzip.dat": b"\x1f\x8b\x08" + b"\x00" * 8,
+            "bzip2.dat": b"BZh9" + b"\x00" * 8,
+            "rar.dat": b"Rar!\x1a\x07\x01\x00" + b"\x00" * 4,
+            "macho-32.dat": b"\xfe\xed\xfa\xce" + b"\x00" * 8,
+            "macho-64.dat": b"\xfe\xed\xfa\xcf" + b"\x00" * 8,
+            "macho-le-32.dat": b"\xce\xfa\xed\xfe" + b"\x00" * 8,
+            "macho-le-64.dat": b"\xcf\xfa\xed\xfe" + b"\x00" * 8,
+            "macho-universal.dat": b"\xca\xfe\xba\xbe" + b"\x00" * 8,
+            "elf.dat": b"\x7fELF" + b"\x00" * 8,
+            "pe.dat": b"MZ" + b"\x00" * 8,
+            "bzip2-note.md": b"BZh9\n",
+        }
+        for name, data in cases.items():
+            self.write("bin/" + name, data)
+        code, lines = self.run_guard()
+        self.assertEqual(code, 1)
+        for name in cases:
+            self.assertTrue(
+                any(line.startswith(f"bin/{name}: forbidden file signature") for line in lines),
+                msg=name,
+            )
+
 
 class WalkAndListTest(_TreeTest):
     def test_walk_fallback_used_without_git_repository(self):
