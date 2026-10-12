@@ -24,9 +24,11 @@
   },
   "historical": [
     {
+      "closure_sha256": null,
       "disposition": "kept as a historical record; never counted as a session exit",
       "id": "application-hang-66604",
-      "kind": "application-hang"
+      "kind": "application-hang",
+      "recurrence_status": "not-observed"
     }
   ],
   "launcher": {
@@ -138,7 +140,7 @@
       "settled": true
     }
   ],
-  "schema": "luminumbra.game.acceptance-evidence.v1",
+  "schema": "luminumbra.game.acceptance-evidence.v2",
   "sessions": [
     {
       "audio_mode": "null",

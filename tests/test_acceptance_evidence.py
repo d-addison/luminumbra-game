@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from decimal import Decimal
 from pathlib import Path
+from unittest import mock
 
 TOOLS = Path(__file__).resolve().parent.parent / "tools"
 if str(TOOLS) not in sys.path:
@@ -18,7 +19,7 @@ if str(TOOLS) not in sys.path:
 import validate_acceptance_evidence  # noqa: E402
 import validate_content  # noqa: E402
 from lumlib.schema import load_json_file  # noqa: E402
-from validators import discover  # noqa: E402
+from validators import acceptance, discover  # noqa: E402
 from validators.acceptance import (  # noqa: E402
     PRIVATE_EXTENSIONS,
     SCHEMA_ID,
@@ -107,6 +108,7 @@ def _labels():
         "forest-submission", "forest-report", "launcher-identity", "disabled-backend-proof",
         "closure-finite-residency", "closure-distant-cave-edit-omitted",
         "closure-residency-cap", "closure-fixture-note",
+        "closure-candidate-hang", "closure-second-hang",
     ]
     for sid in SESSION_IDS:
         labels.append("command-" + sid)
@@ -141,7 +143,7 @@ def _scene(sid, defects=()):
 
 
 def make_bundle():
-    """Return a fresh valid acceptance evidence bundle (the v0.3 shape)."""
+    """Return a synthetic v2 bundle; validity does not establish native execution."""
     return {
         "schema": SCHEMA_ID,
         "package": {"git_sha": GIT_SHA, "archive_sha256": _h("archive")},
@@ -215,10 +217,8 @@ def make_bundle():
         },
         "launcher": {"identity_sha256": _h("launcher-identity"), "preview_audio_off": True},
         "disabled_backend": {"proof_sha256": _h("disabled-backend-proof"), "settings_preserved": True},
-        # The valid release bundle has no open limitation: both gaps are closed here,
-        # which models a run after the final v0.3 requirement is met. Each closed entry
-        # names its closure evidence artifact. While open they are blocking and release
-        # mode refuses them, and an open entry carries a null closure_sha256.
+        # Synthetic closures exercise format and integrity only. Humans review actual
+        # native completion records; these fixture bytes establish no qualification.
         "limitations": [
             {"blocks_release": True, "closure_sha256": _h("closure-finite-residency"),
              "id": "finite-residency", "status": "closed"},
@@ -227,13 +227,23 @@ def make_bundle():
         ],
         "historical": [
             {
+                "closure_sha256": None,
                 "disposition": "kept as a historical record; never counted as a session exit",
                 "id": "application-hang-66604",
                 "kind": "application-hang",
+                "recurrence_status": "not-observed",
             }
         ],
         "unresolved_diagnostics": [],
     }
+
+
+def _closed_recurrence_bundle():
+    """Return synthetic closure evidence for integrity tests, without native provenance."""
+    doc = make_bundle()
+    doc["historical"][0]["recurrence_status"] = "closed"
+    doc["historical"][0]["closure_sha256"] = _h("closure-candidate-hang")
+    return doc
 
 
 def _store(root, skip=frozenset()):
@@ -289,15 +299,21 @@ class ValidBundleTest(_BundleTest):
         self.assertClean(make_bundle(), release=True)
 
     def test_fixture_parses_and_validates(self):
-        doc = load_json_file(FIXTURES / "valid.json")
-        self.assertClean(doc)
-        self.assertClean(doc, release=True)
+        for name in ("valid.json", "valid-closed-recurrence.json"):
+            with self.subTest(fixture=name):
+                doc = load_json_file(FIXTURES / name)
+                self.assertClean(doc)
+                self.assertClean(doc, release=True)
 
     def test_fixture_is_byte_equal_to_helper_output(self):
         data = (FIXTURES / "valid.json").read_bytes()
         expected = (json.dumps(make_bundle(), indent=2, sort_keys=True) + "\n").encode("utf-8")
         self.assertEqual(data, expected)
         self.assertNotIn(b"\r", data)
+
+    def test_closed_fixture_matches_synthetic_closure_helper(self):
+        expected = (json.dumps(_closed_recurrence_bundle(), indent=2, sort_keys=True) + "\n").encode("utf-8")
+        self.assertEqual((FIXTURES / "valid-closed-recurrence.json").read_bytes(), expected)
 
     def test_limitations_and_historical_records_are_present(self):
         doc = make_bundle()
@@ -326,8 +342,16 @@ class SchemaRuleTest(_BundleTest):
 
     def test_future_schema_refused(self):
         doc = self.bundle()
-        doc["schema"] = "luminumbra.game.acceptance-evidence.v2"
+        doc["schema"] = "luminumbra.game.acceptance-evidence.v3"
         self.assertProblem(doc, "future schema version")
+
+    def test_old_schema_without_recurrence_fields_is_not_defaulted(self):
+        doc = self.bundle()
+        doc["schema"] = "luminumbra.game.acceptance-evidence.v1"
+        del doc["historical"][0]["recurrence_status"]
+        del doc["historical"][0]["closure_sha256"]
+        self.assertEqual(validate_bundle(doc), ["bundle: unknown schema"])
+        self.assertEqual(validate_bundle(doc, release=True), ["bundle: unknown schema"])
 
     def test_unknown_schema_refused(self):
         doc = self.bundle()
@@ -1049,6 +1073,193 @@ class ForestAndLimitationTest(_BundleTest):
         self.assertClean(doc, release=True)
 
 
+class RecurrenceAndDiagnosticsTest(_BundleTest):
+    def test_explicit_not_observed_and_closed_are_structurally_valid(self):
+        for doc in (make_bundle(), _closed_recurrence_bundle()):
+            for release in (False, True):
+                with self.subTest(status=doc["historical"][0]["recurrence_status"], release=release):
+                    self.assertClean(doc, release=release)
+
+    def test_candidate_open_recurrence_refused_regardless_of_original_disposition(self):
+        doc = self.bundle()
+        doc["historical"][0]["disposition"] = "original incident owner-closed after non-reproduction"
+        doc["historical"][0]["recurrence_status"] = "open"
+        original = copy.deepcopy(doc)
+        self.assertClean(doc)
+        self.assertEqual(validate_bundle(doc, release=True), [
+            "historical[0].recurrence_status: open recurrence is refused in release mode",
+        ])
+        self.assertEqual(doc, original)
+
+    def test_historical_required_fields_have_no_defaults(self):
+        for key in ("recurrence_status", "closure_sha256"):
+            for release in (False, True):
+                with self.subTest(key=key, release=release):
+                    doc = self.bundle()
+                    del doc["historical"][0][key]
+                    self.assertEqual(validate_bundle(doc, release=release), [
+                        "historical[0]: missing key '%s'" % key,
+                    ])
+
+    def test_missing_and_malformed_historical_inventory_refused(self):
+        doc = self.bundle()
+        del doc["historical"]
+        for release in (False, True):
+            self.assertEqual(validate_bundle(doc, release=release), ["bundle: missing key 'historical'"])
+        for value, problem in (
+            (None, "historical: must be a list"),
+            ({}, "historical: must be a list"),
+            ([None], "historical[0]: not an object"),
+            ([[]], "historical[0]: not an object"),
+        ):
+            for release in (False, True):
+                with self.subTest(value=value, release=release):
+                    doc = self.bundle()
+                    doc["historical"] = value
+                    self.assertEqual(validate_bundle(doc, release=release), [problem])
+
+    def test_historical_unknown_keys_refused(self):
+        doc = self.bundle()
+        doc["historical"][0]["reviewed"] = True
+        for release in (False, True):
+            self.assertEqual(validate_bundle(doc, release=release), [
+                "historical[0]: unknown key 'reviewed'",
+            ])
+
+    def test_recurrence_status_requires_exact_enum_string(self):
+        for status in (None, True, 0, [], {}, "", "pending", "Closed", "not_observed"):
+            for release in (False, True):
+                with self.subTest(status=status, release=release):
+                    doc = self.bundle()
+                    doc["historical"][0]["recurrence_status"] = status
+                    self.assertEqual(validate_bundle(doc, release=release), [
+                        "historical[0].recurrence_status: must be one of not-observed, open, closed",
+                    ])
+
+    def test_closed_recurrence_requires_nonnull_valid_hash(self):
+        for closure in (None, "", "abc", "A" * 64, "g" * 64, 4, True, [], {}):
+            for release in (False, True):
+                with self.subTest(closure=closure, release=release):
+                    doc = _closed_recurrence_bundle()
+                    doc["historical"][0]["closure_sha256"] = closure
+                    reason = ("closed recurrence needs closure evidence" if closure is None
+                              else "must be 64 lowercase hex characters")
+                    self.assertEqual(validate_bundle(doc, release=release), [
+                        "historical[0].closure_sha256: " + reason,
+                    ])
+
+    def test_closed_recurrence_missing_closure_key_refused(self):
+        doc = _closed_recurrence_bundle()
+        del doc["historical"][0]["closure_sha256"]
+        for release in (False, True):
+            self.assertEqual(validate_bundle(doc, release=release), [
+                "historical[0]: missing key 'closure_sha256'",
+            ])
+
+    def test_unclosed_recurrences_require_explicit_null_closure(self):
+        for status in ("not-observed", "open"):
+            for closure in (_h("closure-candidate-hang"), "", True, [], {}):
+                for release in (False, True):
+                    with self.subTest(status=status, closure=closure, release=release):
+                        doc = self.bundle()
+                        doc["historical"][0].update(recurrence_status=status, closure_sha256=closure)
+                        expected = [
+                            "historical[0].closure_sha256: %s recurrence must have a null closure_sha256"
+                            % status,
+                        ]
+                        if status == "open" and release:
+                            expected.append(
+                                "historical[0].recurrence_status: open recurrence is refused in release mode"
+                            )
+                        self.assertEqual(validate_bundle(doc, release=release), expected)
+
+    def test_historical_closure_must_differ_from_archive_and_limitation_closures(self):
+        conflicts = [
+            ("package.archive_sha256", _h("archive")),
+            ("limitations[0].closure_sha256", _h("closure-finite-residency")),
+            ("limitations[1].closure_sha256", _h("closure-distant-cave-edit-omitted")),
+        ]
+        for location, digest in conflicts:
+            for release in (False, True):
+                with self.subTest(location=location, release=release):
+                    doc = _closed_recurrence_bundle()
+                    doc["historical"][0]["closure_sha256"] = digest
+                    self.assertEqual(validate_bundle(doc, release=release), [
+                        "historical[0].closure_sha256: closure evidence must differ from " + location,
+                    ])
+
+    def test_historical_closures_are_unique_across_records(self):
+        doc = _closed_recurrence_bundle()
+        second = dict(doc["historical"][0], id="second-hang")
+        doc["historical"].append(second)
+        for release in (False, True):
+            self.assertEqual(validate_bundle(doc, release=release), [
+                "historical[1].closure_sha256: closure evidence must differ from historical[0].closure_sha256",
+            ])
+        second["closure_sha256"] = _h("closure-second-hang")
+        self.assertClean(doc, release=True)
+
+    def test_closure_reuse_of_a_journal_or_other_nonclosure_artifact_is_allowed(self):
+        for digest in (_h("journal-create-world"), _h("forest-report")):
+            with self.subTest(digest=digest):
+                doc = _closed_recurrence_bundle()
+                doc["historical"][0]["closure_sha256"] = digest
+                self.assertClean(doc, release=True)
+
+    def test_closed_historical_record_never_overrides_hang_exit_refusal(self):
+        for code in (HANG_UNSIGNED, HANG_SIGNED):
+            for index in range(len(SESSION_IDS)):
+                for release in (False, True):
+                    with self.subTest(code=code, session=index, release=release):
+                        doc = _closed_recurrence_bundle()
+                        doc["sessions"][index]["exit_code"] = code
+                        self.assertEqual(validate_bundle(doc, release=release), [
+                            "sessions[%d].exit_code: 0xCFFFFFFF is the application hang signature "
+                            "and is refused in every session" % index,
+                        ])
+
+    def test_every_nonempty_diagnostics_inventory_blocks_release_and_is_preserved(self):
+        for diagnostics in (["hang investigation pending"], [""], ["", ""], [" "]):
+            with self.subTest(diagnostics=diagnostics):
+                doc = self.bundle()
+                doc["unresolved_diagnostics"] = diagnostics
+                original = copy.deepcopy(doc)
+                self.assertClean(doc)
+                self.assertEqual(validate_bundle(doc, release=True), [
+                    "unresolved_diagnostics: nonempty unresolved diagnostics are refused in release mode",
+                ])
+                self.assertEqual(doc, original)
+
+    def test_diagnostics_must_be_a_list_in_both_modes(self):
+        for diagnostics in (None, "", {}, False):
+            for release in (False, True):
+                with self.subTest(diagnostics=diagnostics, release=release):
+                    doc = self.bundle()
+                    doc["unresolved_diagnostics"] = diagnostics
+                    self.assertEqual(validate_bundle(doc, release=release), [
+                        "unresolved_diagnostics: must be a list",
+                    ])
+
+    def test_diagnostics_missing_key_refused_in_both_modes(self):
+        doc = self.bundle()
+        del doc["unresolved_diagnostics"]
+        for release in (False, True):
+            self.assertEqual(validate_bundle(doc, release=release), [
+                "bundle: missing key 'unresolved_diagnostics'",
+            ])
+
+    def test_malformed_diagnostic_items_are_type_checked_and_block_release(self):
+        for item in (None, False, 3, [], {}):
+            with self.subTest(item=item):
+                doc = self.bundle()
+                doc["unresolved_diagnostics"] = [item]
+                self.assertEqual(validate_bundle(doc), ["unresolved_diagnostics[0]: must be a string"])
+                self.assertEqual(validate_bundle(doc, release=True), [
+                    "unresolved_diagnostics: nonempty unresolved diagnostics are refused in release mode",
+                    "unresolved_diagnostics[0]: must be a string",
+                ])
+
+
 class ReleaseOnlyRecordTest(_BundleTest):
     def test_preview_audio_off_must_be_true_in_release_mode(self):
         doc = self.bundle()
@@ -1341,6 +1552,27 @@ class PrivateMaterialTest(_BundleTest):
 
 
 class ArtifactHashListTest(unittest.TestCase):
+    def test_null_historical_closures_are_not_artifact_references(self):
+        for status in ("not-observed", "open"):
+            doc = make_bundle()
+            doc["historical"][0]["recurrence_status"] = status
+            self.assertFalse(any(location.startswith("historical[") for _, location in artifact_hashes(doc)))
+            self.assertEqual(artifact_count(doc), artifact_count(make_bundle()))
+
+    def test_historical_closure_inventory_locations_and_distinct_counts(self):
+        doc = _closed_recurrence_bundle()
+        doc["historical"].append(dict(
+            doc["historical"][0], id="second-hang", closure_sha256=_h("closure-second-hang"),
+        ))
+        self.assertEqual(artifact_hashes(doc)[-2:], [
+            (_h("closure-candidate-hang"), "historical[0].closure_sha256"),
+            (_h("closure-second-hang"), "historical[1].closure_sha256"),
+        ])
+        self.assertEqual(artifact_count(doc), artifact_count(make_bundle()) + 2)
+        doc["historical"][0]["closure_sha256"] = _h("journal-create-world")
+        self.assertEqual(artifact_count(doc), artifact_count(make_bundle()) + 1)
+        self.assertIn((_h("journal-create-world"), "historical[0].closure_sha256"), artifact_hashes(doc))
+
     def test_artifact_hashes_cover_every_named_hash(self):
         doc = make_bundle()
         digests = {digest for digest, _location in artifact_hashes(doc)}
@@ -1374,6 +1606,48 @@ class ArtifactRootTest(unittest.TestCase):
         self.assertEqual(verify_artifacts(doc, str(self.store), MARKER), [])
         self.assertEqual(artifact_count(doc), len({d for d, _ in artifact_hashes(doc)}))
         self.assertIn((_h("pack-base"), "content.packs[0].sha256"), artifact_hashes(doc))
+
+    def test_retained_hash_correct_historical_closures_verify_without_native_provenance(self):
+        doc = _closed_recurrence_bundle()
+        doc["historical"].append(dict(
+            doc["historical"][0], id="second-hang", closure_sha256=_h("closure-second-hang"),
+        ))
+        _store(self.store)
+        self.assertEqual(validate_bundle(doc, release=True), [])
+        self.assertEqual(verify_artifacts(doc, str(self.store), MARKER), [])
+
+    def test_missing_historical_closure_artifacts_report_each_json_path(self):
+        doc = _closed_recurrence_bundle()
+        first = _h("closure-candidate-hang")
+        second = _h("closure-second-hang")
+        doc["historical"].append(dict(doc["historical"][0], id="second-hang", closure_sha256=second))
+        _store(self.store, skip=frozenset([first, second]))
+        self.assertEqual(verify_artifacts(doc, str(self.store), MARKER), [
+            "historical[0].closure_sha256: artifact %s missing" % first,
+            "historical[1].closure_sha256: artifact %s missing" % second,
+        ])
+
+    def test_mismatched_historical_closure_artifact_reports_json_path(self):
+        doc = _closed_recurrence_bundle()
+        _store(self.store)
+        digest = _h("closure-candidate-hang")
+        (self.store / "sha256" / digest).write_bytes(b"tampered closure\n")
+        self.assertEqual(verify_artifacts(doc, str(self.store), MARKER), [
+            "historical[0].closure_sha256: artifact %s mismatch" % digest,
+        ])
+
+    def test_reused_artifact_is_hashed_once_and_reports_first_reference(self):
+        doc = _closed_recurrence_bundle()
+        digest = _h("journal-create-world")
+        doc["historical"][0]["closure_sha256"] = digest
+        _store(self.store)
+        with mock.patch("validators.acceptance._scan_file", wraps=acceptance._scan_file) as scan:
+            self.assertEqual(verify_artifacts(doc, str(self.store), MARKER), [])
+        self.assertEqual(sum(Path(call.args[0]).name == digest for call in scan.call_args_list), 1)
+        (self.store / "sha256" / digest).unlink()
+        self.assertEqual(verify_artifacts(doc, str(self.store), MARKER), [
+            "sessions[0].journal_sha256: artifact %s missing" % digest,
+        ])
 
     def test_missing_pack_artifact_reported_with_location(self):
         doc = make_bundle()
@@ -1703,7 +1977,67 @@ class RegistryTest(unittest.TestCase):
 
     def test_schema_is_registered(self):
         schemas, _globs = discover()
+        self.assertEqual(SCHEMA_ID, "luminumbra.game.acceptance-evidence.v2")
         self.assertIn(SCHEMA_ID, schemas)
+        self.assertNotIn("luminumbra.game.acceptance-evidence.v1", schemas)
+
+    def test_registry_refuses_old_and_future_schema_versions(self):
+        target = self.root / "content" / "acceptance"
+        target.mkdir(parents=True)
+        for version in ("v1", "v3"):
+            with self.subTest(version=version):
+                doc = make_bundle()
+                doc["schema"] = "luminumbra.game.acceptance-evidence." + version
+                _write_bundle(target / "bundle.json", doc)
+                for release in (False, True):
+                    self.assertEqual(validate_content.validate_tree(str(self.root), False, release), [
+                        "content/acceptance/bundle.json: schema '%s' is not registered" % doc["schema"],
+                    ])
+
+    def test_release_registry_remains_structural_without_an_artifact_store(self):
+        target = self.root / "content" / "acceptance"
+        target.mkdir(parents=True)
+        _write_bundle(target / "bundle.json", _closed_recurrence_bundle())
+        self.assertEqual(validate_content.validate_tree(str(self.root), False, True), [])
+
+    def test_registry_release_refuses_open_recurrence_and_every_nonempty_diagnostics_list(self):
+        target = self.root / "content" / "acceptance"
+        target.mkdir(parents=True)
+        cases = [
+            ("open recurrence", "historical[0].recurrence_status: open recurrence is refused in release mode"),
+            (["pending"], "unresolved_diagnostics: nonempty unresolved diagnostics are refused in release mode"),
+            ([""], "unresolved_diagnostics: nonempty unresolved diagnostics are refused in release mode"),
+        ]
+        for value, problem in cases:
+            with self.subTest(value=value):
+                doc = make_bundle()
+                if value == "open recurrence":
+                    doc["historical"][0]["recurrence_status"] = "open"
+                else:
+                    doc["unresolved_diagnostics"] = value
+                _write_bundle(target / "bundle.json", doc)
+                self.assertEqual(validate_content.validate_tree(str(self.root), False, False), [])
+                self.assertEqual(validate_content.validate_tree(str(self.root), False, True), [
+                    "content/acceptance/bundle.json: " + problem,
+                ])
+
+    def test_registry_rejects_missing_and_malformed_recurrence_data(self):
+        target = self.root / "content" / "acceptance"
+        target.mkdir(parents=True)
+        for value in (None, []):
+            with self.subTest(value=value):
+                doc = make_bundle()
+                if value is None:
+                    del doc["historical"][0]["recurrence_status"]
+                    problem = "historical[0]: missing key 'recurrence_status'"
+                else:
+                    doc["historical"][0]["recurrence_status"] = value
+                    problem = "historical[0].recurrence_status: must be one of not-observed, open, closed"
+                _write_bundle(target / "bundle.json", doc)
+                for release in (False, True):
+                    self.assertEqual(validate_content.validate_tree(str(self.root), False, release), [
+                        "content/acceptance/bundle.json: " + problem,
+                    ])
 
     def test_content_tree_runs_structure_checks(self):
         target = self.root / "content" / "acceptance"
@@ -1882,12 +2216,47 @@ class CliTest(unittest.TestCase):
         self.assertEqual(out.splitlines(), ["artifacts verified: %d" % artifact_count(doc)])
 
     def test_artifact_root_release_success(self):
+        # Synthetic bytes validate integrity only; this is no native qualification.
         _write_bundle(self.bundle, make_bundle())
         _store(self.store)
         code, out, _err = _run_cli([str(self.bundle), "--artifact-root", str(self.store),
                                     "--audio-off-marker", MARKER, "--release"])
         self.assertEqual(code, 0)
         self.assertTrue(out.startswith("artifacts verified: "), out)
+
+    def test_release_refuses_recurrence_and_diagnostics_with_complete_artifacts(self):
+        _store(self.store)
+        for value in ("open", ["pending"], [""]):
+            with self.subTest(value=value):
+                doc = make_bundle()
+                if value == "open":
+                    doc["historical"][0]["recurrence_status"] = value
+                    problem = "historical[0].recurrence_status: open recurrence is refused in release mode"
+                else:
+                    doc["unresolved_diagnostics"] = value
+                    problem = "unresolved_diagnostics: nonempty unresolved diagnostics are refused in release mode"
+                _write_bundle(self.bundle, doc)
+                argv = [str(self.bundle), "--artifact-root", str(self.store), "--audio-off-marker", MARKER]
+                code, out, err = _run_cli(argv)
+                self.assertEqual((code, out, err), (0, "artifacts verified: %d\n" % artifact_count(doc), ""))
+                code, out, err = _run_cli(argv + ["--release"])
+                self.assertEqual((code, out, err), (1, problem + "\n", ""))
+
+    def test_closed_recurrence_release_requires_actual_hash_correct_closure_artifact(self):
+        doc = _closed_recurrence_bundle()
+        _write_bundle(self.bundle, doc)
+        digest = _h("closure-candidate-hang")
+        _store(self.store, skip=frozenset([digest]))
+        argv = [str(self.bundle), "--artifact-root", str(self.store), "--audio-off-marker", MARKER, "--release"]
+        code, out, err = _run_cli(argv)
+        self.assertEqual((code, out, err), (1, "historical[0].closure_sha256: artifact %s missing\n" % digest, ""))
+        closure = self.store / "sha256" / digest
+        closure.write_bytes(b"wrong closure\n")
+        code, out, err = _run_cli(argv)
+        self.assertEqual((code, out, err), (1, "historical[0].closure_sha256: artifact %s mismatch\n" % digest, ""))
+        closure.write_bytes(_blob("closure-candidate-hang"))
+        code, out, err = _run_cli(argv)
+        self.assertEqual((code, out, err), (0, "artifacts verified: %d\n" % artifact_count(doc), ""))
 
     def test_missing_artifact_is_reported(self):
         _write_bundle(self.bundle, make_bundle())
@@ -1956,6 +2325,23 @@ class FixtureTest(unittest.TestCase):
         ("invalid-open-limitation.json", True, "limitations[0]: open blocking limitation is refused", True),
         ("invalid-no-historical.json", False, "historical: needs at least 1 item(s)", False),
         ("invalid-private-extension.json", False, "private file extension '.wav'", False),
+        ("invalid-old-schema.json", False, "bundle: unknown schema", False),
+        ("invalid-missing-historical-recurrence-status.json", False, "historical[0]: missing key 'recurrence_status'", False),
+        ("invalid-missing-historical-closure-sha256.json", False, "historical[0]: missing key 'closure_sha256'", False),
+        ("invalid-malformed-recurrence.json", False, "historical[0].recurrence_status: must be one of", False),
+        ("invalid-unknown-historical-key.json", False, "historical[0]: unknown key 'reviewed'", False),
+        ("invalid-open-recurrence.json", True, "historical[0].recurrence_status: open recurrence is refused in release mode", True),
+        ("invalid-closed-recurrence-missing-closure.json", False, "historical[0]: missing key 'closure_sha256'", False),
+        ("invalid-closed-recurrence-null-closure.json", False, "historical[0].closure_sha256: closed recurrence needs closure evidence", False),
+        ("invalid-closed-recurrence-bad-hash.json", False, "historical[0].closure_sha256: must be 64 lowercase hex characters", False),
+        ("invalid-historical-archive-closure.json", False, "historical[0].closure_sha256: closure evidence must differ from package.archive_sha256", False),
+        ("invalid-cross-collection-closure.json", False, "historical[0].closure_sha256: closure evidence must differ from limitations[0].closure_sha256", False),
+        ("invalid-duplicate-historical-closure.json", False, "historical[1].closure_sha256: closure evidence must differ from historical[0].closure_sha256", False),
+        ("invalid-not-observed-closure.json", False, "historical[0].closure_sha256: not-observed recurrence must have a null closure_sha256", False),
+        ("invalid-unresolved-diagnostics.json", True, "unresolved_diagnostics: nonempty unresolved diagnostics are refused in release mode", True),
+        ("invalid-empty-string-diagnostics.json", True, "unresolved_diagnostics: nonempty unresolved diagnostics are refused in release mode", True),
+        ("invalid-malformed-diagnostics.json", False, "unresolved_diagnostics[0]: must be a string", False),
+        ("invalid-missing-diagnostics.json", False, "bundle: missing key 'unresolved_diagnostics'", False),
     )
 
     def test_each_invalid_fixture_triggers_its_rule(self):
@@ -1964,13 +2350,30 @@ class FixtureTest(unittest.TestCase):
                 doc = load_json_file(FIXTURES / name)
                 problems = validate_bundle(doc, release=release)
                 self.assertTrue(any(text in problem for problem in problems), problems)
+                expected_rules = [text]
+                if name == "invalid-missing-session-kind.json":
+                    expected_rules.append("sessions: at least 2 sessions of kind 'switch' are required, found 0")
+                self.assertEqual(len(problems), len(expected_rules), problems)
+                for problem, expected in zip(problems, expected_rules):
+                    self.assertIn(expected, problem)
                 if release_only:
-                    problems = validate_bundle(doc, release=False)
-                    self.assertFalse(any(text in problem for problem in problems), problems)
+                    self.assertEqual(validate_bundle(doc, release=False), [])
 
     def test_every_rule_fixture_file_exists(self):
         for name, _release, _text, _release_only in self.CASES:
             self.assertTrue((FIXTURES / name).is_file(), name)
+
+    def test_every_fixture_is_covered_and_versions_are_explicit(self):
+        expected = {name for name, _release, _text, _release_only in self.CASES}
+        expected.update(("valid.json", "valid-closed-recurrence.json"))
+        self.assertEqual({path.name for path in FIXTURES.glob("*.json")}, expected)
+        for name in sorted(expected):
+            with self.subTest(fixture=name):
+                doc = load_json_file(FIXTURES / name)
+                version = "v3" if name == "invalid-future-schema.json" else "v2"
+                if name == "invalid-old-schema.json":
+                    version = "v1"
+                self.assertEqual(doc["schema"], "luminumbra.game.acceptance-evidence." + version)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate an acceptance evidence bundle (luminumbra.game.acceptance-evidence.v1).
+"""Validate an acceptance evidence bundle (luminumbra.game.acceptance-evidence.v2).
 
 Usage:
   python3 -I -B tools/validate_acceptance_evidence.py BUNDLE.json --structure-only
@@ -12,8 +12,10 @@ checks the bundle without the artifact store and says so on its last line.
 DIR/sha256/<hex> and checks that each audio-off journal contains the marker the
 operator supplies with --audio-off-marker TEXT. The marker is required with
 --artifact-root and refused with --structure-only. --release adds the release
-gate (open defects and open blocking limitations are refused) and requires
---artifact-root.
+gate (open defects, open blocking limitations, open candidate hang recurrences,
+and every nonempty unresolved diagnostics list are refused) and requires
+--artifact-root. Success establishes consistency and artifact integrity, not
+native execution or human review of qualification and closure records.
 
 Exit codes: 0 ok, 1 invalid, 2 usage error. Problems are printed one per line
 as PATH: reason, at most 50 lines. Control characters in a printed diagnostic

@@ -1,8 +1,9 @@
-"""Acceptance evidence bundle: schema luminumbra.game.acceptance-evidence.v1.
+"""Acceptance evidence bundle: schema luminumbra.game.acceptance-evidence.v2.
 
 validate_bundle checks a parsed bundle: structure, cross-field rules, and a
 whole-document scan for private material. With release=True it also refuses
-open defects and open blocking limitations. artifact_hashes lists the hashes a
+open defects, open blocking limitations, open candidate hang recurrences, and
+every nonempty unresolved diagnostics list. artifact_hashes lists the hashes a
 bundle names, and verify_artifacts reads the content-addressed store
 DIR/sha256/<hex>, recomputes every hash, and checks that audio-off session
 journals contain the audio-off marker the operator supplies, that each session
@@ -13,7 +14,9 @@ are parsed with shlex (posix) into argv, and a flag counts only when an argument
 equals it exactly; command artifacts are capped at 64 KiB.
 
 The bundle stores hashes and counts only; the store holds the artifacts. The
-audio-off marker is not part of the bundle: a bundle cannot vouch for its own
+checks establish consistency and artifact integrity, not native authenticity
+or human acceptance of qualification and closure records. The audio-off marker
+is not part of the bundle: a bundle cannot vouch for its own
 audio-off proof, so the marker comes from the operator on the command line.
 Problems are strings of the form "PATH: reason", where PATH is a json-path
 style location such as sessions[2].exit_code.
@@ -33,7 +36,7 @@ from lumlib.diagnostics import CONTROL, printable
 from lumlib.schema import SchemaError, check_keys, check_schema_id, is_kebab
 from validate_public_tree import ABSOLUTE_PATH_PATTERNS
 
-SCHEMA_ID = "luminumbra.game.acceptance-evidence.v1"
+SCHEMA_ID = "luminumbra.game.acceptance-evidence.v2"
 HANG_EXIT_CODE = 0xCFFFFFFF
 MIN_SCENES = 6
 MIN_SWITCH_SESSIONS = 2
@@ -43,6 +46,7 @@ AUDIO_MODES = ("null", "off")
 DISPOSITIONS = ("accepted", "fixed", "open", "waived")
 LIMITATION_STATUSES = ("open", "closed")
 HISTORICAL_KIND = "application-hang"
+RECURRENCE_STATUSES = ("not-observed", "open", "closed")
 EXIT_CODE_MIN = -2147483648
 EXIT_CODE_MAX = 4294967295
 MARKER_MIN_LENGTH = 8
@@ -552,18 +556,28 @@ def _check_disabled_backend(problems, value, path, release):
         problems.append("%s must be true in release mode" % preserved_path)
 
 
-def _check_limitations(problems, value, path, release, archive=None):
+def _check_closure_identity(problems, closure, path, archive, closures):
+    """Bind a valid closure digest to one record across both closure collections."""
+    if closure == archive:
+        problems.append("%s: closure evidence must differ from package.archive_sha256" % path)
+    elif closure in closures:
+        problems.append("%s: closure evidence must differ from %s" % (path, closures[closure]))
+    else:
+        closures[closure] = path
+
+
+def _check_limitations(problems, value, path, release, archive, closures):
     """Check the limitation entries. ARCHIVE is package.archive_sha256 when it is known.
 
     Closure evidence is the retained completion record. Each closed entry's closure hash
-    must differ from the package archive hash and from every other entry's closure hash.
+    must differ from the package archive hash and from every limitation or historical
+    record's closure hash. CLOSURES is shared across both collections.
     Whether the record proves completion is decided by the human review of the release.
     """
     if not _list(problems, value, path):
         return
     seen = set()
     first_index = {}
-    closures = {}
     for index, entry in enumerate(value):
         here = "%s[%d]" % (path, index)
         if not _keys(problems, entry, here, ("blocks_release", "closure_sha256", "id", "status")):
@@ -580,18 +594,7 @@ def _check_limitations(problems, value, path, release, archive=None):
             if closure is None:
                 problems.append("%s: closed limitation needs closure evidence" % closure_path)
             elif _hex(problems, closure, closure_path):
-                if closure == archive:
-                    problems.append(
-                        "%s: closure evidence must differ from package.archive_sha256"
-                        % closure_path
-                    )
-                elif closure in closures:
-                    problems.append(
-                        "%s: closure evidence must differ from %s"
-                        % (closure_path, closures[closure])
-                    )
-                else:
-                    closures[closure] = closure_path
+                _check_closure_identity(problems, closure, closure_path, archive, closures)
         elif closure is not None:
             problems.append("%s: open limitation must have a null closure_sha256" % closure_path)
         if not isinstance(entry["blocks_release"], bool):
@@ -609,13 +612,21 @@ def _check_limitations(problems, value, path, release, archive=None):
             )
 
 
-def _check_historical(problems, value, path):
+def _check_historical(problems, value, path, release, archive, closures):
+    """Check candidate recurrence separately from the original incident's disposition.
+
+    Status is explicit: no missing status is interpreted as not-observed. Closed
+    recurrences need a retained closure artifact; human review decides its adequacy.
+    """
     if not _list(problems, value, path, minimum=1):
         return
     seen = set()
     for index, record in enumerate(value):
         here = "%s[%d]" % (path, index)
-        if not _keys(problems, record, here, ("disposition", "id", "kind")):
+        if not _keys(
+            problems, record, here,
+            ("closure_sha256", "disposition", "id", "kind", "recurrence_status"),
+        ):
             continue
         _check_id(problems, record["id"], _join(here, "id"), seen)
         if record["kind"] != HISTORICAL_KIND:
@@ -623,11 +634,29 @@ def _check_historical(problems, value, path):
         disposition = record["disposition"]
         if not isinstance(disposition, str) or not disposition:
             problems.append("%s: must be a non-empty string" % _join(here, "disposition"))
+        status = record["recurrence_status"]
+        status_path = _join(here, "recurrence_status")
+        closure = record["closure_sha256"]
+        closure_path = _join(here, "closure_sha256")
+        if not isinstance(status, str) or status not in RECURRENCE_STATUSES:
+            problems.append("%s: must be one of %s" % (status_path, ", ".join(RECURRENCE_STATUSES)))
+        elif status == "closed":
+            if closure is None:
+                problems.append("%s: closed recurrence needs closure evidence" % closure_path)
+            elif _hex(problems, closure, closure_path):
+                _check_closure_identity(problems, closure, closure_path, archive, closures)
+        else:
+            if closure is not None:
+                problems.append("%s: %s recurrence must have a null closure_sha256" % (closure_path, status))
+            if release and status == "open":
+                problems.append("%s: open recurrence is refused in release mode" % status_path)
 
 
-def _check_diagnostics(problems, value, path):
+def _check_diagnostics(problems, value, path, release):
     if not _list(problems, value, path):
         return
+    if release and value:
+        problems.append("%s: nonempty unresolved diagnostics are refused in release mode" % path)
     for index, item in enumerate(value):
         if not isinstance(item, str):
             problems.append("%s[%d]: must be a string" % (path, index))
@@ -661,7 +690,9 @@ def _scan_strings(value, path, problems):
 def validate_bundle(doc, *, release=False):
     """Return the problems found in a parsed bundle; an empty list means valid.
 
-    release=True also refuses open defects and open blocking limitations.
+    release=True also refuses open defects, open blocking limitations, open
+    candidate hang recurrences, and every nonempty unresolved diagnostics list.
+    Success does not establish native execution or human review.
     """
     try:
         check_schema_id(doc, SCHEMA_ID, "bundle")
@@ -696,14 +727,15 @@ def validate_bundle(doc, *, release=False):
         _check_launcher(problems, doc["launcher"], "launcher", release)
     if "disabled_backend" in doc:
         _check_disabled_backend(problems, doc["disabled_backend"], "disabled_backend", release)
+    package = doc.get("package")
+    archive = package.get("archive_sha256") if isinstance(package, dict) else None
+    closures = {}
     if "limitations" in doc:
-        package = doc.get("package")
-        archive = package.get("archive_sha256") if isinstance(package, dict) else None
-        _check_limitations(problems, doc["limitations"], "limitations", release, archive)
+        _check_limitations(problems, doc["limitations"], "limitations", release, archive, closures)
     if "historical" in doc:
-        _check_historical(problems, doc["historical"], "historical")
+        _check_historical(problems, doc["historical"], "historical", release, archive, closures)
     if "unresolved_diagnostics" in doc:
-        _check_diagnostics(problems, doc["unresolved_diagnostics"], "unresolved_diagnostics")
+        _check_diagnostics(problems, doc["unresolved_diagnostics"], "unresolved_diagnostics", release)
     _scan_strings(doc, "", problems)
     return [printable(problem) for problem in problems]
 
@@ -757,6 +789,10 @@ def artifact_hashes(doc):
     for index, entry in enumerate(limitations if isinstance(limitations, list) else []):
         if isinstance(entry, dict):
             add(entry.get("closure_sha256"), "limitations[%d].closure_sha256" % index)
+    historical = doc.get("historical")
+    for index, record in enumerate(historical if isinstance(historical, list) else []):
+        if isinstance(record, dict):
+            add(record.get("closure_sha256"), "historical[%d].closure_sha256" % index)
     return refs
 
 

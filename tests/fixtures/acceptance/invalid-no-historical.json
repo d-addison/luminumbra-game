@@ -138,7 +138,7 @@
       "settled": true
     }
   ],
-  "schema": "luminumbra.game.acceptance-evidence.v1",
+  "schema": "luminumbra.game.acceptance-evidence.v2",
   "sessions": [
     {
       "audio_mode": "null",

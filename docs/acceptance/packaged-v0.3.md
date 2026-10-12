@@ -12,7 +12,12 @@ rests on: hashes and counts of the native runs.
 
 **NEEDS-NATIVE-RUN**: the packaged acceptance has not been executed on the
 qualified machine. No session, scene, forest, or launcher evidence exists yet.
-This marker stays until a release-mode validation of a bundle passes.
+This marker stays until actual native acceptance executes for the candidate on
+the qualified machine, both Step 0 repository gates pass, artifact validation
+with `--release` passes, and the owner explicitly accepts the retained,
+candidate-bound native qualification and closure records through human review.
+No candidate hang recurrence may remain open, and `unresolved_diagnostics` must
+be empty. Validator success alone cannot clear this marker.
 
 ## Step 0: repository gates before native acceptance
 
@@ -38,9 +43,11 @@ of two modes.
   kinds and exit codes (an integer from -2147483648 to 4294967295), audio
   consistency (`off` requires the flag, and the flag requires `off` or a `null`
   session with the flag false), startup checks, refusal and save rules, scene and
-  defect rules, forest agreement, limitations with their closure evidence,
-  historical records, and private material. It does not open any artifact. On
-  success its last line is `structure-only: artifacts NOT verified`. It refuses
+  defect rules, forest hash formats and the producer's `agree` flag, limitations
+  with their closure evidence, explicit candidate recurrence status and closure
+  evidence in historical records, diagnostics types, and private material. It
+  does not open any artifact. On success its last line is
+  `structure-only: artifacts NOT verified`. It refuses
   `--audio-off-marker`.
 - `--artifact-root DIR --audio-off-marker TEXT` also verifies the artifacts.
   Every hash the bundle names must exist under the artifact root and hash to its
@@ -71,7 +78,10 @@ of two modes.
 `--release` adds the release gate. It refuses any scene defect with disposition
 `open`, any limitation with status `open` and `blocks_release` true, and any
 bundle whose `launcher.preview_audio_off` or `disabled_backend.settings_preserved`
-is not true. It requires `--artifact-root`. Using `--release` without
+is not true. It also refuses any historical record with candidate
+`recurrence_status` `open` and every nonempty `unresolved_diagnostics` list,
+including `[""]`. Nonrelease validation preserves that string inventory without
+interpreting its prose. It requires `--artifact-root`. Using `--release` without
 `--artifact-root` is a usage error (exit 2). Giving both modes, or neither, is
 also a usage error.
 
@@ -93,15 +103,48 @@ A file's name is the sha256 of its content. The hashes the bundle names are the
 package archive, each content pack, each session's command and journal, each save
 file's before and after hash, each scene capture, the forest submission and
 report, the launcher identity, the disabled-backend proof, and the closure
-evidence of each closed limitation (`limitations[].closure_sha256`).
+evidence of each closed limitation (`limitations[].closure_sha256`) and each
+closed candidate recurrence (`historical[].closure_sha256`). Null closures add
+no artifact. The count is of distinct digests, even when another artifact is
+reused; verification reports a missing or mismatched digest at its first JSON
+reference path, such as `historical[0].closure_sha256`.
 
-The closure evidence of a closed limitation is its retained completion record.
-Each closed entry's closure hash must differ from the package archive hash and
-from every other entry's closure hash, so one artifact cannot close two gaps or
-stand in for the archive. The validator checks only that the record is stored and
-hashes to its name. It does not decide whether the record proves completion. That
+The closure evidence of a closed limitation or candidate recurrence is its
+retained completion record. Each closed entry's closure hash must differ from
+the package archive hash and
+from every other closure hash across both `limitations[]` and `historical[]`,
+so one artifact cannot close two records or stand in for the archive. Reuse of a
+journal or another nonclosure artifact is allowed by the hash schema; human
+review decides whether that artifact also qualifies as closure evidence.
+The validator checks only that the record is stored and hashes to its name. It
+does not decide whether the record proves completion. That
 judgement is the human review of the release, and the release mode check does not
 replace it.
+
+## Candidate recurrence records
+
+Every historical record requires `id`, `kind`, `disposition`,
+`recurrence_status`, and `closure_sha256`; unknown keys are refused. The original
+hang remains owner-closed after accepted non-reproduction. Its explanatory
+`disposition` is retained separately from the candidate's recurrence status and
+cannot waive an open recurrence. The candidate status must be exactly one of:
+
+- `not-observed`: no recurrence was observed during the candidate's actual
+  qualified native acceptance executions, whose retained records the owner has
+  reviewed. `closure_sha256` must be explicitly null.
+- `open`: a candidate recurrence awaits investigation or closure.
+  `closure_sha256` must be explicitly null; `--release` refuses this status.
+- `closed`: the candidate recurrence has a retained closure record.
+  `closure_sha256` must be a 64-character lowercase SHA-256 digest, distinct
+  from the archive and every other closure digest. Artifact validation requires
+  its actual retained bytes; the owner must review the actual hang report and
+  dump and accept the closure before publication.
+
+Missing fields have no defaults. Synthetic fixtures declaring `not-observed`
+or `closed` exercise schema and artifact consistency only; they establish no
+qualified native execution. Closing a recurrence never permits the hang exit
+signature in any session: `0xCFFFFFFF`, 3489660927 unsigned and -805306369 signed
+remain unconditionally refused after signed/unsigned normalization.
 
 ## Evidence is hash-only
 
@@ -123,6 +166,24 @@ or after whitespace, a quote, a parenthesis, a bracket, a brace, a comma, a semi
 (U+0000 through U+001F or U+007F). Every problem the validator reports escapes control
 characters as `\n`, `\r`, `\t` or `\xNN`, so each diagnostic stays on one line.
 
+Artifact hashes, the operator's audio-off marker, and the declared status do not
+authenticate native provenance. Even a successful artifact release check proves
+only consistency and integrity. The owner reviews the retained qualification
+record identifying the qualified machine, configuration, actual commands and
+execution results, together with session journals, captures, reports, and any
+closure records. That review explicitly binds them to the source candidate
+(`package.git_sha`), package archive (`package.archive_sha256`), and pinned
+engine/game revisions (`engine.rev`, `game.rev`) in the bundle, and records the
+owner's acceptance. Keep these records with the private artifact store; do not
+add private material or a native-authentication claim to the public bundle.
+
+The current scoped checks have no expected artifact-size fields. Forest
+validation checks the two digest formats and the producer's `forest.agree`
+flag, then verifies retained bytes against their hashes in artifact mode; it
+does not parse the submission/report to establish semantic agreement or producer
+binding. Human review must assess that agreement. Stronger expected-size and
+forest-format checks remain separate follow-up work outside this repair.
+
 ## Criteria
 
 Each row names the criterion, the command or procedure that produces the
@@ -140,8 +201,8 @@ evidence, the artifact expected, and the bundle key that records the result.
 | `--no-audio` wins over a diagnostic opt-in | Launch with both `--enable-audio --no-audio` (the diagnostic opt-in and the audio-off flag). The engine document states that `--enable-audio` is an experimental diagnostic opt-in and that `--no-audio` always suppresses it | Journal containing the audio-off marker | `startup_checks.no_audio_precedence_session` names a `restart` or `load` session with `audio_mode` `off` and `no_audio_flag` true; its command must contain the exact arguments `--enable-audio` and `--no-audio` |
 | Disabled settings controls preserve settings | Operator checks each disabled settings control and confirms the stored settings are unchanged | Proof record | `disabled_backend.proof_sha256`, `disabled_backend.settings_preserved` (release requires true) |
 | Preview launcher stays audio-off and its guard holds | Run the preview launcher; record its identity and the preview session | Launcher identity; preview journal with the audio-off marker | `launcher.identity_sha256`, `launcher.preview_audio_off` (release requires true); `sessions[]` kind `preview` |
-| Finite residency and distant cave/edit omissions | Not accepted for v0.3. Each gap is recorded as a `limitations[]` entry with status `open`, `blocks_release` true, and `closure_sha256` null. It stays open until the final requirement is met: an unbounded world with 16 km distant coverage, with edits and caves in distant tiers (the expanded v0.3 contract). Only then may the entry become `closed`, with `closure_sha256` set to the sha256 of its closure evidence (a 64-character lowercase hex value that differs from the package archive hash and from the other closure hash; the artifact must be in the artifact root). An open entry must have a null `closure_sha256`. | Closure evidence, once closed | `limitations[]` ids `finite-residency`, `distant-cave-edit-omitted`, with `status`, `blocks_release` and `closure_sha256`; both entries are mandatory in every bundle with `blocks_release` true; `--release` refuses either while open |
-| Historical application hang kept as a record | Kept as the historical record of the client hang (exit `0xCFFFFFFF`, 3489660927 unsigned, -805306369 signed; see the engine document section "Native client hang (PID 66604)"). It is never counted as a session exit and is refused as an exit code in every session. A recurrence blocks publication | None | `historical[]` kind `application-hang` |
+| Finite residency and distant cave/edit omissions | Not accepted for v0.3. Each gap is recorded as a `limitations[]` entry with status `open`, `blocks_release` true, and `closure_sha256` null. It stays open until the final requirement is met: an unbounded world with 16 km distant coverage, with edits and caves in distant tiers (the expanded v0.3 contract). Only then may the entry become `closed`, with `closure_sha256` set to the sha256 of its closure evidence (a 64-character lowercase hex value that differs from the package archive hash and from every other limitation or historical closure hash; the artifact must be in the artifact root). An open entry must have a null `closure_sha256`. | Closure evidence, once closed | `limitations[]` ids `finite-residency`, `distant-cave-edit-omitted`, with `status`, `blocks_release` and `closure_sha256`; both entries are mandatory in every bundle with `blocks_release` true; `--release` refuses either while open |
+| Historical application hang and candidate recurrence | Retain the original owner-accepted closure after non-reproduction (exit `0xCFFFFFFF`, 3489660927 unsigned, -805306369 signed; see the engine document section "Native client hang (PID 66604)"). It is never counted as a session exit and is refused as an exit code in every session. Record candidate recurrence separately; an open recurrence blocks publication | Candidate native records; actual hang report, dump, and closure record for a closed recurrence | `historical[]` kind `application-hang`, explanatory `disposition`, explicit `recurrence_status` and `closure_sha256` |
 
 The startup and precedence rows are checked by the bundle itself. The first
 `startup_checks` session must be `null` audio with a nonzero saved master and no
@@ -157,13 +218,17 @@ not carry `--enable-audio`.
 | Item | Value |
 |---|---|
 | Owner | Operator on the qualified machine |
-| Candidate identity | The package git sha and the package archive sha256 in the bundle |
+| Candidate identity | `package.git_sha`, `package.archive_sha256`, `engine.rev`, and `game.rev` in the bundle; retained qualification and closure records are bound to these identities by explicit owner review |
 | Launch conditions | Quoted from the engine document `docs/v0.3-acceptance.md`, section "Native client hang (PID 66604)": "every remaining native acceptance run launches with the watchdog armed and stdout on local disk, and a recurrence must be examined through its actual hang report and dump before any verdict; a recurrence blocks publication." The watchdog is armed with the documented opt-in `--hang-watchdog-seconds N`; N must exceed the longest legitimate stage (such as a large save). Stdout goes to a file on local disk, not over the WSL network redirector |
 | Commands | Step 0 commands above; the criteria commands above; the packaged launch command is supplied by the operator and its sha256 goes in `command_sha256`; the audio-off marker text is supplied by the operator as `--audio-off-marker TEXT` |
-| Completion | All of the following hold: `python -I -B tools/validate_content.py --root . --release` exits 0; `python -I -B tools/validate_public_tree.py --worktree` exits 0; `python3 -I -B tools/validate_acceptance_evidence.py BUNDLE.json --artifact-root DIR --audio-off-marker TEXT --release` exits 0 and prints `artifacts verified: <n>`; no hang recurrence is open |
+| Completion | All of the following hold: actual native acceptance executes for this candidate on the qualified machine with the launch conditions above; `python -I -B tools/validate_content.py --root . --release` exits 0; `python -I -B tools/validate_public_tree.py --worktree` exits 0; `python3 -I -B tools/validate_acceptance_evidence.py BUNDLE.json --artifact-root DIR --audio-off-marker TEXT --release` exits 0 and prints `artifacts verified: <n>`; the owner explicitly accepts the retained, candidate-bound native qualification and closure records through human review; no candidate hang recurrence is open and `unresolved_diagnostics` is empty |
 
-Until that release-mode validation passes, the status of this runbook is
-NEEDS-NATIVE-RUN.
+The status stays NEEDS-NATIVE-RUN until actual qualified-machine native
+execution for this candidate, both repository gates, artifact release validation,
+and explicit owner human review of the retained, candidate-bound native
+qualification and closure records are complete, with no open candidate hang
+recurrence and an empty diagnostics inventory. Artifact validation alone cannot
+clear the status.
 
 ## Commands for the bundle
 
@@ -173,5 +238,9 @@ python3 -I -B tools/validate_acceptance_evidence.py BUNDLE.json --artifact-root 
 python3 -I -B tools/validate_acceptance_evidence.py BUNDLE.json --artifact-root DIR --audio-off-marker TEXT --release
 ```
 
-The bundle schema is `luminumbra.game.acceptance-evidence.v1`. CI runs the unit
-tests and the public tree guard. It does not run the packaged client.
+The bundle schema is `luminumbra.game.acceptance-evidence.v2`. This explicit
+migration refuses v1 bundles rather than assigning a recurrence status; newer
+versions, including v3, are refused. The content registry applies the same
+structural release rules without opening an artifact store. The acceptance CLI
+requires the artifact store for `--release`. CI runs the unit tests and the
+public tree guard. It does not run the packaged client.
