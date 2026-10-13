@@ -1,0 +1,11 @@
+{
+  "scripts": {
+    "companion": {
+      "path": "authoring/meshgen/companion/__init__.py",
+      "sha256": "1f0f17b21bd57cf75ff3c43e722eb0c79d052b070403bb563e30396226eb1d81",
+      "modules": {
+        "authoring/meshgen/companion/bootstrap.py": "af4ce5826926b801e5c51e3bd3e6f8dd73b36a66cbcf44b236147ab292b990a1"
+      }
+    }
+  }
+}

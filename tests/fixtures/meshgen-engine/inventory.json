@@ -1,0 +1,28 @@
+{
+  "repository": "d-addison/luminumbra",
+  "revision": "4a01f6d46a83c0e59503c3cb388ec3fbb04dc52a",
+  "source": "tools/blender/authoring/service",
+  "files": {
+    "launch.py": "b5064230c8f82ef9620b18f8cb3b6f4c8fa3283775ecade071bfd3d7a11a6a7b",
+    "LICENSE": "64d4a249869ca138e9e6f6cc525ac6996b6f25af72a03fc2456ff768ed478887",
+    "luminumbra_author/__init__.py": "1cbf74f4c7eeb3cf31d930f6494cb4ada2b168e8e53c5d3b69def889268362e1",
+    "luminumbra_author/__main__.py": "ef3b7f91e5d19a16d2070b7e63e2a23049f2893fe779476bcab97d5e18f915a0",
+    "luminumbra_author/bootstrap.py": "d5b7b37e062f5cbaf556a138a43c3176930bd14336f7941f5b983774badfa339",
+    "luminumbra_author/contracts.py": "476e6cca9ebf8e29ffc3a20c1a0680fd9d549ee304f854f9558cc15d5363aeb8",
+    "luminumbra_author/formats.py": "6db466d07be608fdc618670828a683869c4e1ba4cfdd3cef5d96379bcd9d24a4",
+    "luminumbra_author/locking.py": "6f665ae402f1d66b99d4d2f47a19d5fa8fd51643e799de79b7e2ecddbe14245d",
+    "luminumbra_author/meshgen_config.py": "db5e9173019fd3b1882e3a0f866ccc0e0e430ac0a06e29db1f559f60f79ed7af",
+    "luminumbra_author/meshgen_contracts.py": "e945ec9981c19b7f1c047f294b8492b5070f10aa9fb90213d2e82c9cdfd765ea",
+    "luminumbra_author/meshgen_registry.py": "e82994cc73f2c8d1c107ed22455fb2f2b1c9e6e8c4c2da338fff96abeae55374",
+    "luminumbra_author/meshgen_scripts.py": "0bb7b8076e09323b6573ab84143ef7d57a39f161412327d33a7c4102956a2f2b",
+    "luminumbra_author/prefab.py": "f0ed8394f1999efc000a86534f9c6b1cf3a924e47846371896bbe90bb24e1e7b",
+    "luminumbra_author/process.py": "2c399261c0cb61f600fe70c75d94e91422350b2759e3c03d9a8f4d8d635326d3",
+    "luminumbra_author/service.py": "ceb24b518588e9773c0a9b2bcf663f8ea127d55293eb4b70f42b90d306aeb3b9",
+    "luminumbra_author/schemas/meshgen.candidate.v1.schema.json": "7b8b99d2a091f907d1780e05cd0d997891ee795fb508cacd3d1948a53decf760",
+    "luminumbra_author/schemas/meshgen.config.v1.schema.json": "ed0bc739e37413e213bcd882cb85e0c624e59245e508b5cfd9148d1953445e55",
+    "luminumbra_author/schemas/meshgen.defaults.v1.json": "5892f08343f15b42bc75d65e68de59474175365d26e30a648007b8e82726ce25",
+    "luminumbra_author/schemas/meshgen.provenance.v2.schema.json": "5557eaaa110cd85aae4527f3209a7894878ba2bb9a18dfc872c54c3c8b6504fb",
+    "luminumbra_author/schemas/meshgen.receipt.v1.schema.json": "5f5549aa214401db52bde910a8b5367a350757f9400f4d03fa037f957259fbcf",
+    "luminumbra_author/schemas/meshgen.request.v1.schema.json": "3880f9ec8cc0cced5110eeff0184fb167d0781f0e0dc7cfd0a3258fd62c37dc5"
+  }
+}
