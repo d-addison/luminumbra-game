@@ -27,3 +27,7 @@ member checks and Linux/Windows acquisition results.
 The [conversion instructions](assets/tree-small-02/CONVERSION.md) describe the source-derived leaf cards, mesh LODs and material processing. The engine acquisition manifest pins the published runtime archive and every required file. No engine dependency on this repository is required for building the engine.
 
 Repository software and conversion tools use the [MIT license](LICENSE). Tree Small 02 art remains CC0, as recorded in its source manifest and each pack’s `LICENSE.txt`.
+
+The [MG2 project configuration guide](docs/authoring-meshgen.md) describes the
+mock-only provisional profiles, game-owned companion skeleton and offline E1
+contract checks. Mesh generation and native Blender acceptance remain pending.

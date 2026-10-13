@@ -1,0 +1,10 @@
+schema_version = "1.0.0"
+id = "luminumbra_meshgen"
+version = "0.1.0"
+name = "Luminumbra Meshgen Companion"
+tagline = "Project mesh generation integration skeleton"
+maintainer = "David Addison"
+type = "add-on"
+blender_version_min = "5.1.0"
+blender_version_max = "5.1.1"
+license = ["SPDX:MIT"]
