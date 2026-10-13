@@ -24,7 +24,7 @@ tests/
 
 Every JSON file under `content/` carries a top-level `schema` key unless a
 registered glob pattern claims it. Schema ids follow the convention
-`luminumbra.game.<kind>.v1`, for example `luminumbra.game.item.v1`. A new
+`luminumbra.game.<kind>.v1`, for example `luminumbra.game.items.v1`. A new
 incompatible shape gets a new suffix; the old id stays registered until its
 files are migrated.
 
@@ -32,6 +32,8 @@ H1 simulation authoring uses the accepted engine policy identifier
 `luminumbra.distant_policy.v1` and the new population identifier
 `luminumbra.game.region-population.v1`. See [simulation authoring](simulation-authoring.md)
 for its separate inventory pin, exact schemas, export transaction and runtime gates.
+H2 uses `luminumbra.game.items.v1`; see [item authoring](items-authoring.md) for its
+type identities, strict catalogue limits, shared export and pending runtime gates.
 
 ## Validator registry
 

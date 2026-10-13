@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export a captured H1 bundle to a fresh destination; no engine writes or discovery.
+"""Export a captured H1/H2 bundle to a fresh destination; no engine writes or discovery.
 
 Independent replacement for the deferred #40 exporter. A fresh output directory
 is reserved exclusively; one fully staged bundle is then renamed into it.
@@ -20,12 +20,15 @@ if _TOOLS not in sys.path:
 from lumlib.diagnostics import SingleLineParser, printable  # noqa: E402
 from lumlib.engine_inventory import (INVENTORY_PATH, REVISION_RE, capture_source,
                                      parse_author_bytes, validate_inventory)  # noqa: E402
-from lumlib.identity import canonical_bytes  # noqa: E402
+from lumlib.identity import canonical_bytes, semantic_identity  # noqa: E402
+from validators.items import ITEMS_PATH, parse_items  # noqa: E402
 from validators.simulation import (POLICY_PATH, POPULATION_PATH, parse_policy,
-                                    parse_population, semantic_identity)  # noqa: E402
+                                    parse_population)  # noqa: E402
 
 MAPPINGS = ((POLICY_PATH, "data/common/sim/distant_policy.json", parse_policy),
-            (POPULATION_PATH, "data/common/sim/region_population.json", parse_population))
+            (POPULATION_PATH, "data/common/sim/region_population.json", parse_population),
+            (ITEMS_PATH, "data/common/items/items.json", parse_items))
+# Retain H1's receipt wire shape and identifier; file rows now also cover H2.
 RECEIPT_SCHEMA = "luminumbra.game.h1-export-receipt.v1"
 SEMANTIC_ENCODING = "canonical-integer-json-fnv1a64.v1"
 

@@ -2,7 +2,7 @@
 
 from lumlib.engine_inventory import (MAX_DOCUMENT_BYTES, load_inventory,
                                      parse_author_bytes, read_captured, validate_inventory)
-from lumlib.identity import canonical_bytes, fnv1a64
+from lumlib.identity import semantic_identity
 from lumlib.schema import SchemaError, check_keys, check_schema_id, is_kebab
 
 POLICY_SCHEMA = "luminumbra.distant_policy.v1"
@@ -111,11 +111,6 @@ def load_policy(path, inventory):
     """Author-side optional policy load: only clean absence means empty overrides."""
     raw = read_captured(path, optional=True)
     return check_policy(empty_policy(), inventory) if raw is None else parse_policy(raw, inventory)
-
-
-def semantic_identity(obj):
-    """Authoring integer-JSON checksum v1, not an ARL5 compatibility claim."""
-    return "%016x" % fnv1a64(canonical_bytes(obj))
 
 
 def _registered(path, obj, ctx, expected, checker):

@@ -1,0 +1,11 @@
+{
+  "schema": "luminumbra.game.items.v1",
+  "items": [
+    {
+      "id": "farming-seed",
+      "despawn_after": 900,
+      "payload": 0,
+      "render": {"model_id": "farming-seed", "material_id": 2}
+    }
+  ]
+}
