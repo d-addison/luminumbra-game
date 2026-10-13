@@ -58,6 +58,18 @@
       3
     ]
   },
+  "save_flow": {
+    "create_session": "create-world",
+    "edit_session": "edit-world",
+    "load_session": "load-world",
+    "loaded_sha256": [
+      "2b57d855e22d2571dd5c4011d3449b64f11a0d2403631bed0d8066bdb8873f62",
+      "70d5a16b9f3360869e92100e4768a738f0602da0a1b4b61c38732a8db86d4f21"
+    ],
+    "restart_session": "restart-world",
+    "save_name": "edit-save",
+    "save_session": "save-world"
+  },
   "saves": [
     {
       "files": [

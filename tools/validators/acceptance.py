@@ -1,7 +1,9 @@
 """Acceptance evidence bundle: schema luminumbra.game.acceptance-evidence.v2.
 
 validate_bundle checks a parsed bundle: structure, cross-field rules, and a
-whole-document scan for private material. With release=True it also refuses
+whole-document scan for private material. Session array order establishes the
+save flow, whose linked save and load stages must have matching file hashes.
+Distinct session artifact roles must have distinct digests. With release=True it also refuses
 open defects, open blocking limitations, open candidate hang recurrences, and
 every nonempty unresolved diagnostics list. artifact_hashes lists the hashes a
 bundle names, and verify_artifacts reads the content-addressed store
@@ -42,6 +44,7 @@ MIN_SCENES = 6
 MIN_SWITCH_SESSIONS = 2
 MAX_NOTE_LENGTH = 200
 SESSION_KINDS = ("create", "edit", "save", "restart", "load", "switch", "refusal", "preview")
+SAVE_FLOW_KINDS = ("create", "edit", "save", "restart", "load")
 AUDIO_MODES = ("null", "off")
 DISPOSITIONS = ("accepted", "fixed", "open", "waived")
 LIMITATION_STATUSES = ("open", "closed")
@@ -67,7 +70,7 @@ ROOT_KEYS = frozenset(
     [
         "schema", "package", "engine", "game", "content", "policy", "sessions", "saves",
         "scenes", "forest", "launcher", "disabled_backend", "limitations", "historical",
-        "startup_checks", "unresolved_diagnostics",
+        "startup_checks", "unresolved_diagnostics", "save_flow",
     ]
 )
 SESSION_KEYS = frozenset(
@@ -366,6 +369,96 @@ def _check_sessions(problems, value, path, codes, saves_by_name):
             "%s: at least %d sessions of kind 'switch' are required, found %d"
             % (_where(path), MIN_SWITCH_SESSIONS, switches)
         )
+
+
+def _check_save_flow(problems, value, path, sessions, saves_by_name):
+    """Bind one saved world's file hashes to ordered save and load sessions."""
+    required = {kind + "_session" for kind in SAVE_FLOW_KINDS}
+    required.update(("save_name", "loaded_sha256"))
+    if not _keys(problems, value, path, required):
+        return
+    sessions_by_id = _index_by_name(sessions, "id")
+    positions = {}
+    for index, session in enumerate(sessions if isinstance(sessions, list) else []):
+        if isinstance(session, dict) and isinstance(session.get("id"), str):
+            positions.setdefault(session["id"], index)
+    order = []
+    for kind in SAVE_FLOW_KINDS:
+        key = kind + "_session"
+        name = value[key]
+        session = sessions_by_id.get(name) if isinstance(name, str) else None
+        if session is None:
+            problems.append("%s: unknown session %r" % (_join(path, key), name))
+        elif session.get("kind") != kind:
+            problems.append(
+                "%s: session %r must be a %s session" % (_join(path, key), name, kind)
+            )
+        else:
+            order.append(positions[name])
+    if len(order) == len(SAVE_FLOW_KINDS) and any(
+        before >= after for before, after in zip(order, order[1:])
+    ):
+        problems.append(
+            "%s: sessions must occur in create -> edit -> save -> restart -> load order"
+            % path
+        )
+
+    name = value["save_name"]
+    save = saves_by_name.get(name) if isinstance(name, str) else None
+    if save is None:
+        problems.append("%s: unknown save %r" % (_join(path, "save_name"), name))
+    loaded = value["loaded_sha256"]
+    loaded_path = _join(path, "loaded_sha256")
+    if not _list(problems, loaded, loaded_path, minimum=1):
+        return
+    files = save.get("files") if save is not None else None
+    if isinstance(files, list) and len(loaded) != len(files):
+        problems.append("%s: needs one hash per file in save %r" % (loaded_path, name))
+    for index, digest in enumerate(loaded):
+        here = "%s[%d]" % (loaded_path, index)
+        if not _hex(problems, digest, here):
+            continue
+        if isinstance(files, list) and index < len(files) and isinstance(files[index], dict):
+            saved = files[index].get("sha256_after")
+            if isinstance(saved, str) and _HEX64.fullmatch(saved) and digest != saved:
+                problems.append(
+                    "%s: load hash must equal the hash recorded at save (sha256_after) for file %r"
+                    % (here, files[index].get("path"))
+                )
+    if isinstance(files, list) and files and all(
+        isinstance(entry, dict)
+        and isinstance(entry.get("sha256_before"), str)
+        and _HEX64.fullmatch(entry["sha256_before"])
+        and entry.get("sha256_before") == entry.get("sha256_after")
+        for entry in files
+    ):
+        problems.append("%s: save flow must reference a save with an edited file" % path)
+
+
+def _session_artifact_collisions(doc):
+    """Refuse a digest shared by distinct session evidence roles, even across sessions.
+
+    Save snapshots may share bytes across stages and refusal checks. Other bundle
+    artifacts retain their existing reuse rules (for example journal closure evidence).
+    """
+    problems = []
+    roles = {}
+    for digest, location in artifact_hashes(doc):
+        if location.startswith("sessions["):
+            role = location.rsplit(".", 1)[-1]
+        elif location.startswith(("saves[", "save_flow.loaded_sha256[")):
+            role = "save-file"
+        else:
+            continue
+        previous = roles.get(digest)
+        if previous is not None and previous[0] != role:
+            problems.append(
+                "%s: artifact digest collision between distinct roles %s and %s; must differ from %s"
+                % (location, previous[0], role, previous[1])
+            )
+        else:
+            roles.setdefault(digest, (role, location))
+    return problems
 
 
 def _check_startup(problems, value, path, sessions_by_id):
@@ -719,6 +812,8 @@ def validate_bundle(doc, *, release=False):
         _check_startup(problems, doc["startup_checks"], "startup_checks", sessions_by_id)
     if "saves" in doc:
         _check_saves(problems, doc["saves"], "saves")
+    if "save_flow" in doc:
+        _check_save_flow(problems, doc["save_flow"], "save_flow", doc.get("sessions"), saves_by_name)
     if "scenes" in doc:
         _check_scenes(problems, doc["scenes"], "scenes", release)
     if "forest" in doc:
@@ -736,6 +831,7 @@ def validate_bundle(doc, *, release=False):
         _check_historical(problems, doc["historical"], "historical", release, archive, closures)
     if "unresolved_diagnostics" in doc:
         _check_diagnostics(problems, doc["unresolved_diagnostics"], "unresolved_diagnostics", release)
+    problems.extend(_session_artifact_collisions(doc))
     _scan_strings(doc, "", problems)
     return [printable(problem) for problem in problems]
 
@@ -771,6 +867,10 @@ def artifact_hashes(doc):
             base = "saves[%d].files[%d]" % (index, position)
             add(entry.get("sha256_before"), base + ".sha256_before")
             add(entry.get("sha256_after"), base + ".sha256_after")
+    flow = doc.get("save_flow")
+    loaded = flow.get("loaded_sha256") if isinstance(flow, dict) else None
+    for index, digest in enumerate(loaded if isinstance(loaded, list) else []):
+        add(digest, "save_flow.loaded_sha256[%d]" % index)
     scenes = doc.get("scenes")
     for index, scene in enumerate(scenes if isinstance(scenes, list) else []):
         if isinstance(scene, dict):
@@ -916,7 +1016,11 @@ def verify_artifacts(doc, root, marker):
     --no-audio; no_audio_flag must match --no-audio; a null session may not carry
     --enable-audio; the precedence session carries both flags; the null-audio startup
     session carries neither. Journals and commands are checked only when their hash verified.
+    Digest collisions between distinct session evidence roles are refused before any reads.
     """
+    collisions = _session_artifact_collisions(doc)
+    if collisions:
+        return [printable(problem) for problem in collisions]
     if not os.path.isdir(root):
         return ["%s: artifact root is not a directory" % root]
     reason = marker_problem(marker)

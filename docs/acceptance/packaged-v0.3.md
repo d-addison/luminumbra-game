@@ -42,8 +42,9 @@ of two modes.
 - `--structure-only` checks the bundle shape and its cross-field rules: session
   kinds and exit codes (an integer from -2147483648 to 4294967295), audio
   consistency (`off` requires the flag, and the flag requires `off` or a `null`
-  session with the flag false), startup checks, refusal and save rules, scene and
-  defect rules, forest hash formats and the producer's `agree` flag, limitations
+  session with the flag false), startup checks, ordered save flow and matching
+  save/load hashes, distinct session artifact roles, refusal and save rules,
+  scene and defect rules, forest hash formats and the producer's `agree` flag, limitations
   with their closure evidence, explicit candidate recurrence status and closure
   evidence in historical records, diagnostics types, and private material. It
   does not open any artifact. On success its last line is
@@ -101,13 +102,22 @@ DIR/
 
 A file's name is the sha256 of its content. The hashes the bundle names are the
 package archive, each content pack, each session's command and journal, each save
-file's before and after hash, each scene capture, the forest submission and
-report, the launcher identity, the disabled-backend proof, and the closure
+file's before and after hash and each `save_flow.loaded_sha256` hash, each scene
+capture, the forest submission and report, the launcher identity, the
+disabled-backend proof, and the closure
 evidence of each closed limitation (`limitations[].closure_sha256`) and each
 closed candidate recurrence (`historical[].closure_sha256`). Null closures add
 no artifact. The count is of distinct digests, even when another artifact is
 reused; verification reports a missing or mismatched digest at its first JSON
 reference path, such as `historical[0].closure_sha256`.
+
+Session evidence roles must use distinct digests: a command cannot also be a
+journal or a save file, and a journal cannot also be a save file. This applies
+across sessions as well as within one session, and both validation modes reject
+collisions before artifact verification with an `artifact digest collision
+between distinct roles` problem naming both roles and the conflicting field.
+Save-file hashes may repeat across save, load, and refusal observations, and
+references within the same role may reuse a digest.
 
 The closure evidence of a closed limitation or candidate recurrence is its
 retained completion record. Each closed entry's closure hash must differ from
@@ -192,7 +202,7 @@ evidence, the artifact expected, and the bundle key that records the result.
 | Criterion | Command or procedure | Expected artifact | Evidence key |
 |---|---|---|---|
 | Pinned composition (client, server, tree) | Build the package from the pinned engine and game revisions; run `python3 -I -B tools/validate_public_tree.py --root . --worktree` on the game tree | Package archive; clean tree guard | `package.git_sha`, `package.archive_sha256`, `engine.rev`, `game.rev`, `content.packs` |
-| Save flow: create, edit, save, restart, load | Operator supplies the packaged launch command; its sha256 goes in `command_sha256`. Run each step and keep its journal | Command and journal per session; before and after hash of each edited save file | `sessions[]` kinds `create`, `edit`, `save`, `restart`, `load`; `saves[].files` |
+| Save flow: create, edit, save, restart, load | Operator supplies the packaged launch command; its sha256 goes in `command_sha256`. Run each step and keep its journal. Hash every save file immediately after save and again at load after restart | Command and journal per session; baseline, saved, and loaded file hashes | `sessions[]` in execution order; required `save_flow` session links and `save_name`; `saves[].files`; `save_flow.loaded_sha256` |
 | Repeated switching | Same as above, switching between two saved worlds at least twice | Command and journal per switch | `sessions[]` kind `switch`, at least two |
 | Refusals with refusal code and unchanged saves | Trigger each refusal path; record the exit code and refusal code. List in `saves` the saves the refusal leaves in place | Command and journal per refusal; refusal exit codes listed in policy | `sessions[]` kind `refusal` with `refusal_code`, `saves` (non-empty; each name must exist in `saves[]`), and `saves_unchanged`; every file of each referenced save has equal before and after hashes |
 | Six settled scenes, each with a defect disposition | Capture each of six scenes; record each defect as `accepted`, `fixed`, or `waived` (release refuses `open`) | Capture per scene | `scenes[]` (at least six), `settled`, `defects[].disposition` |
@@ -212,6 +222,45 @@ The command artifacts are checked only with `--artifact-root`: the first startup
 session's command must contain neither audio argument, every session's command
 must agree with its declared `no_audio_flag`, and a `null` session's command must
 not carry `--enable-audio`.
+
+## Ordered save-flow evidence
+
+The `sessions[]` array records execution order, from earliest to latest. Do not
+sort it by ID or kind. The required `save_flow` object explicitly links one
+world's create, edit, save, restart, and load stages to their session IDs:
+
+```json
+{
+  "create_session": "create-world",
+  "edit_session": "edit-world",
+  "save_session": "save-world",
+  "restart_session": "restart-world",
+  "load_session": "load-world",
+  "save_name": "edit-save",
+  "loaded_sha256": ["<hash of first file at load>", "<hash of second file at load>"]
+}
+```
+
+Each session ID must exist and have the corresponding kind. Their positions in
+`sessions[]` must strictly increase in create -> edit -> save -> restart -> load
+order. Other sessions may appear between stages. A later restart cannot stand
+in for the restart that precedes this load.
+
+`save_name` must name an entry in `saves[]` with an edited file. For that save,
+`files[].sha256_before` records the baseline before editing, and
+`files[].sha256_after` records the actual bytes immediately after the linked
+`save_session`. After the linked restart, hash the same files at the linked
+`load_session` and record those observations in `loaded_sha256`, in the same
+order as the selected save's `files[]`. Supply exactly one 64-character lowercase
+SHA-256 digest per file. Each load hash must equal that file's `sha256_after`,
+including files that the edit left unchanged. Retain those bytes in the artifact
+store; matching hashes reuse the same content address. Both validation modes
+check the ordering, links, file coverage, and hash equality. The session journals
+and human review establish that these observations came from the stated stages.
+
+This tightens the v2 bundle contract: existing v2 bundles must add `save_flow`
+and preserve execution order before they can pass validation. The positive
+fixtures contain synthetic flow records and provide no native evidence.
 
 ## Native handoff
 

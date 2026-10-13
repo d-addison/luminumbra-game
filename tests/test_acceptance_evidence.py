@@ -171,6 +171,15 @@ def make_bundle():
             "no_audio_precedence_session": "restart-no-audio",
             "null_audio_nonzero_master_session": "restart-world",
         },
+        "save_flow": {
+            "create_session": "create-world",
+            "edit_session": "edit-world",
+            "save_session": "save-world",
+            "restart_session": "restart-world",
+            "load_session": "load-world",
+            "save_name": "edit-save",
+            "loaded_sha256": [_h("manifest-edited"), _h("settings-kept")],
+        },
         "saves": [
             {
                 "name": "edit-save",
@@ -676,6 +685,89 @@ class SessionCoverageTest(_BundleTest):
         doc = self.bundle()
         doc["sessions"][REFUSAL_SWITCH]["refusal_code"] = ""
         self.assertProblem(doc, "sessions[8].refusal_code: must be a non-empty string")
+
+
+class SaveFlowTest(_BundleTest):
+    def test_save_flow_is_required(self):
+        doc = self.bundle()
+        del doc["save_flow"]
+        self.assertProblem(doc, "bundle: missing key 'save_flow'")
+
+    def test_every_pair_of_stages_must_be_in_order(self):
+        for first in range(5):
+            for second in range(first + 1, 5):
+                with self.subTest(first=first, second=second):
+                    doc = self.bundle()
+                    sessions = doc["sessions"]
+                    sessions[first], sessions[second] = sessions[second], sessions[first]
+                    self.assertEqual(validate_bundle(doc), [
+                        "save_flow: sessions must occur in create -> edit -> save -> restart -> load order",
+                    ])
+
+    def test_other_sessions_can_be_interleaved(self):
+        doc = self.bundle()
+        doc["sessions"].insert(2, doc["sessions"].pop(6))
+        self.assertClean(doc, release=True)
+
+    def test_flow_cannot_use_a_later_restart_after_load(self):
+        doc = self.bundle()
+        doc["save_flow"]["restart_session"] = "restart-no-audio"
+        self.assertProblem(doc, "save_flow: sessions must occur in create -> edit -> save -> restart -> load order")
+
+    def test_session_links_are_required_existing_and_of_the_right_kind(self):
+        for kind in acceptance.SAVE_FLOW_KINDS:
+            key = kind + "_session"
+            with self.subTest(kind=kind):
+                doc = self.bundle()
+                del doc["save_flow"][key]
+                self.assertProblem(doc, "save_flow: missing key '%s'" % key)
+                for bad in ("absent", None, [], True):
+                    doc = self.bundle()
+                    doc["save_flow"][key] = bad
+                    self.assertProblem(doc, "save_flow.%s: unknown session" % key)
+                doc = self.bundle()
+                doc["save_flow"][key] = "switch-world-a"
+                self.assertProblem(doc, "save_flow.%s: session 'switch-world-a' must be a %s session" % (key, kind))
+
+    def test_unknown_flow_key_is_refused(self):
+        doc = self.bundle()
+        doc["save_flow"]["extra"] = 1
+        self.assertProblem(doc, "save_flow: unknown key 'extra'")
+
+    def test_unknown_save_is_refused(self):
+        for bad in ("absent", None, []):
+            with self.subTest(name=bad):
+                doc = self.bundle()
+                doc["save_flow"]["save_name"] = bad
+                self.assertProblem(doc, "save_flow.save_name: unknown save")
+
+    def test_flow_must_cover_an_edited_save(self):
+        doc = self.bundle()
+        doc["save_flow"]["save_name"] = "save-refusal"
+        doc["save_flow"]["loaded_sha256"] = [_h("manifest-edited")]
+        self.assertEqual(validate_bundle(doc), [
+            "save_flow: save flow must reference a save with an edited file",
+        ])
+
+    def test_load_hash_must_match_save_hash_for_every_file(self):
+        for index in range(2):
+            with self.subTest(file=index):
+                doc = self.bundle()
+                doc["save_flow"]["loaded_sha256"][index] = _h("manifest-start")
+                self.assertProblem(doc, "save_flow.loaded_sha256[%d]: load hash must equal the hash recorded at save" % index)
+
+    def test_load_hashes_are_required_well_formed_and_complete(self):
+        for hashes, problem in (
+            (None, "must be a list"),
+            ([], "needs at least 1 item(s)"),
+            ([_h("manifest-edited")], "needs one hash per file"),
+            ([_h("manifest-edited"), _h("settings-kept"), _h("manifest-start")], "needs one hash per file"),
+            (["bad", _h("settings-kept")], "must be 64 lowercase hex characters"),
+        ):
+            with self.subTest(hashes=hashes):
+                doc = self.bundle()
+                doc["save_flow"]["loaded_sha256"] = hashes
+                self.assertProblem(doc, problem)
 
 
 class RefusalSaveTest(_BundleTest):
@@ -1607,6 +1699,58 @@ class ArtifactRootTest(unittest.TestCase):
         self.assertEqual(artifact_count(doc), len({d for d, _ in artifact_hashes(doc)}))
         self.assertIn((_h("pack-base"), "content.packs[0].sha256"), artifact_hashes(doc))
 
+    def test_command_cannot_supply_its_own_journal_marker(self):
+        _store(self.store)
+        doc = make_bundle()
+        digest = self._put(b"client --no-audio " + MARKER.encode("utf-8") + b"\n")
+        doc["sessions"][PREVIEW]["command_sha256"] = digest
+        doc["sessions"][PREVIEW]["journal_sha256"] = digest
+        expected = [
+            "sessions[9].journal_sha256: artifact digest collision between distinct roles "
+            "command_sha256 and journal_sha256; must differ from sessions[9].command_sha256",
+        ]
+        self.assertEqual(validate_bundle(doc), expected)
+        with mock.patch("validators.acceptance._scan_file") as scan:
+            self.assertEqual(verify_artifacts(doc, str(self.store), MARKER), expected)
+        scan.assert_not_called()
+
+    def test_save_file_cannot_double_as_command_evidence(self):
+        _store(self.store)
+        doc = make_bundle()
+        doc["sessions"][1]["command_sha256"] = _h("manifest-edited")
+        problems = validate_bundle(doc)
+        self.assertTrue(problems)
+        self.assertTrue(all("artifact digest collision between distinct roles command_sha256 and save-file" in problem for problem in problems))
+        self.assertIn("must differ from sessions[1].command_sha256", problems[0])
+        with mock.patch("validators.acceptance._scan_file") as scan:
+            self.assertEqual(verify_artifacts(doc, str(self.store), MARKER), problems)
+        scan.assert_not_called()
+
+    def test_command_and_journal_roles_cannot_collide_across_sessions(self):
+        doc = make_bundle()
+        doc["sessions"][1]["journal_sha256"] = doc["sessions"][0]["command_sha256"]
+        self.assertEqual(validate_bundle(doc), [
+            "sessions[1].journal_sha256: artifact digest collision between distinct roles "
+            "command_sha256 and journal_sha256; must differ from sessions[0].command_sha256",
+        ])
+
+    def test_same_role_reuse_remains_valid(self):
+        _store(self.store)
+        doc = make_bundle()
+        doc["sessions"][1]["command_sha256"] = doc["sessions"][0]["command_sha256"]
+        self.assertEqual(validate_bundle(doc), [])
+        self.assertEqual(verify_artifacts(doc, str(self.store), MARKER), [])
+
+    def test_load_hashes_are_artifact_references(self):
+        doc = make_bundle()
+        digest = _h("unretained-load")
+        doc["save_flow"]["loaded_sha256"][0] = digest
+        self.assertIn((digest, "save_flow.loaded_sha256[0]"), artifact_hashes(doc))
+        _store(self.store)
+        self.assertEqual(verify_artifacts(doc, str(self.store), MARKER), [
+            "save_flow.loaded_sha256[0]: artifact %s missing" % digest,
+        ])
+
     def test_retained_hash_correct_historical_closures_verify_without_native_provenance(self):
         doc = _closed_recurrence_bundle()
         doc["historical"].append(dict(
@@ -2353,6 +2497,8 @@ class FixtureTest(unittest.TestCase):
                 expected_rules = [text]
                 if name == "invalid-missing-session-kind.json":
                     expected_rules.append("sessions: at least 2 sessions of kind 'switch' are required, found 0")
+                if name == "invalid-no-edited-save.json":
+                    expected_rules.append("save_flow: save flow must reference a save with an edited file")
                 self.assertEqual(len(problems), len(expected_rules), problems)
                 for problem, expected in zip(problems, expected_rules):
                     self.assertIn(expected, problem)
