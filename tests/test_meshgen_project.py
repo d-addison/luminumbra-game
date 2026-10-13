@@ -404,15 +404,20 @@ class CompanionAndOwnershipTests(unittest.TestCase):
                    "authoring/meshgen/toolchain.local.json", ".luminumbra-author/session.json",
                    ".luminumbra-author-recipes/doc/candidates/job/candidate.glb",
                    "authoring/meshgen/generated/preview.png", "authoring/meshgen/native/evidence/receipt.json", ".test-tmp/probe"]
-        result = subprocess.run(["git", "-C", str(ROOT), "check-ignore", "--no-index", "--stdin"],
-                                input="\n".join(ignored) + "\n", capture_output=True, text=True, check=False)
+        result = check_ignore(ignored)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(set(result.stdout.splitlines()), set(ignored))
+        self.assertEqual(set(result.stdout.decode("utf-8").split("\0")[:-1]), set(ignored))
         committed = ["authoring/meshgen/meshgen.config.json", "authoring/meshgen/script-pins.json",
                      "authoring/meshgen/companion/bootstrap.py", "authoring/meshgen/native/finish_probe.py"]
-        result = subprocess.run(["git", "-C", str(ROOT), "check-ignore", "--no-index", "--stdin"],
-                                input="\n".join(committed) + "\n", capture_output=True, text=True, check=False)
+        result = check_ignore(committed)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
+
+def check_ignore(paths):
+    # NUL-separated bytes: text-mode stdin on Windows appends "\r" to every
+    # path, which defeats suffix patterns and makes negative checks vacuous.
+    return subprocess.run(["git", "-C", str(ROOT), "check-ignore", "--no-index", "--stdin", "-z"],
+                          input=("\0".join(paths) + "\0").encode("utf-8"), capture_output=True, check=False)
 
 
 if __name__ == "__main__":
