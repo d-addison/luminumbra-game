@@ -1,6 +1,9 @@
 import copy
 import hashlib
 import json
+import os
+from dataclasses import replace
+from unittest import mock
 import shutil
 import sys
 import tempfile
@@ -15,6 +18,11 @@ if str(_TOOLS) not in sys.path:
 from lumlib import identity, schema  # noqa: E402
 from validators import Context, scene  # noqa: E402
 
+_CAPTURE = b"synthetic CI capture bytes; not a native measurement\x00\xff"
+_CAPTURE_HASH = hashlib.sha256(_CAPTURE).hexdigest()
+_ENGINE = "1" * 40
+_GAME = "2" * 40
+
 _SET_PATH = "content/scenes/distant-world.json"
 _PRESET_PATH = "content/presets/cave_dense.json"
 _SIDECAR_PATH = "content/presets/cave_dense.identity.json"
@@ -27,7 +35,10 @@ _SCENE_FILE = _REPO / "content" / "scenes" / "distant-world.json"
 
 
 def _ctx(allow_pending=False, release=False):
-    return Context(root=str(_REPO), allow_pending=allow_pending, release=release)
+    return Context(root=str(_REPO), allow_pending=allow_pending, release=release,
+                   expected_engine_revision=_ENGINE if release else None,
+                   expected_game_revision=_GAME if release else None,
+                   artifact_root=str(_REPO) if release else None)
 
 
 def _scene_set():
@@ -63,6 +74,9 @@ def _release_root(test):
     shutil.copytree(str(_REPO / "content" / "scenes"), str(tmp / "content" / "scenes"))
     shutil.copytree(str(_REPO / "content" / "presets"), str(tmp / "content" / "presets"))
     (tmp / "content" / "receipts").mkdir()
+    (tmp / _SET_PATH).write_bytes((json.dumps(_discovered_set()) + "\n").encode("utf-8"))
+    (tmp / "artifacts" / "sha256").mkdir(parents=True)
+    (tmp / "artifacts" / "sha256" / _CAPTURE_HASH).write_bytes(_CAPTURE)
     return tmp
 
 
@@ -100,8 +114,12 @@ def _write_full_receipts(root):
                 _write_receipt(root, name, _qualified_receipt(row["id"], profile, display))
 
 
+def _release_ctx(root):
+    return Context(str(root), False, True, _ENGINE, _GAME, str(root / "artifacts"))
+
+
 def _release_problems(obj, root):
-    ctx = Context(root=str(root), allow_pending=False, release=True)
+    ctx = _release_ctx(root)
     return scene.check_scene_set(_SET_PATH, obj, ctx)
 
 
@@ -219,7 +237,7 @@ class SceneSetTests(unittest.TestCase):
         _assert_problem(
             self,
             _release_problems(_discovered_set(), root),
-            "release requires one game_revision across all scene receipts",
+            "game_revision does not match expected_game_revision",
         )
 
     def test_release_refuses_mixed_engine_revision(self):
@@ -230,7 +248,7 @@ class SceneSetTests(unittest.TestCase):
         _assert_problem(
             self,
             _release_problems(_discovered_set(), root),
-            "release requires one engine_revision across all scene receipts",
+            "engine_revision does not match expected_engine_revision",
         )
 
     def test_release_refuses_mixed_preset_identity_within_station(self):
@@ -847,7 +865,7 @@ _RECEIPT_BASE = {
     "below_horizon_sky_percent": 1.5,
     "seam_bands": 0,
     "outer_edge": False,
-    "capture_sha256": "e" * 64,
+    "capture_sha256": _CAPTURE_HASH,
     "scene_identity": "cave-mouth-2km.quality",
     "preset_identity": "e70158a4777ee36b",
     "content_identity": "16636010052247870746",
@@ -866,7 +884,22 @@ def _receipt(**changes):
 
 
 def _receipt_problems(obj, release=False, path=_RECEIPT_PATH):
-    return scene.check_scene_receipt(path, obj, _ctx(allow_pending=True, release=release))
+    if not release:
+        return scene.check_scene_receipt(path, obj, _ctx(allow_pending=True))
+    # Direct release calls have a complete, consistent discovered row context and capture.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        shutil.copytree(_REPO / "content" / "presets", root / "content" / "presets")
+        (root / "content" / "scenes").mkdir()
+        obj_set = _discovered_set()
+        for row in _rows(obj_set):
+            if row["id"] == obj["station"]:
+                for field in ("wanted_set_sha256", "coverage_sha256", "tiers"):
+                    row["qualification"][field] = copy.deepcopy(obj[field])
+        (root / _SET_PATH).write_bytes((json.dumps(obj_set) + "\n").encode("utf-8"))
+        (root / "artifacts" / "sha256").mkdir(parents=True)
+        (root / "artifacts" / "sha256" / _CAPTURE_HASH).write_bytes(_CAPTURE)
+        return scene.check_scene_receipt(path, obj, _release_ctx(root))
 
 
 class SceneReceiptTests(unittest.TestCase):
@@ -994,6 +1027,292 @@ class SceneReceiptTests(unittest.TestCase):
     def test_unknown_receipt_disposition_key_refused(self):
         disposition = {"verdict": "accepted", "note": "ok", "extra": 1}
         _assert_problem(self, _receipt_problems(_receipt(disposition=disposition)), "unknown key 'extra'")
+
+
+class SceneReleaseRepairTests(unittest.TestCase):
+    """Synthetic byte/format checks only; these fixtures never qualify a native run."""
+
+    def setUp(self):
+        self.root = _release_root(self)
+        _write_full_receipts(self.root)
+        self.obj = _discovered_set()
+        self.ctx = _release_ctx(self.root)
+        self.receipt = _qualified_receipt("cave-mouth-2km", "quality", "3840x1600")
+        self.assertEqual(scene.check_scene_set(_SET_PATH, self.obj, self.ctx), [])
+        self.assertEqual(scene.check_scene_receipt(_RECEIPT_PATH, self.receipt, self.ctx), [])
+
+    def test_missing_context_refuses_both_direct_validators_individually(self):
+        for field in ("expected_engine_revision", "expected_game_revision", "artifact_root"):
+            with self.subTest(field=field):
+                ctx = replace(self.ctx, **{field: None})
+                for fn, path, obj in ((scene.check_scene_set, _SET_PATH, self.obj),
+                                      (scene.check_scene_receipt, _RECEIPT_PATH, self.receipt)):
+                    self.assertEqual(fn(path, obj, ctx), [path + ": scene release requires " + field])
+
+    def test_uniformly_stale_engine_and_game_refuse(self):
+        for field in ("engine_revision", "game_revision"):
+            with self.subTest(field=field):
+                for row in _rows(self.obj):
+                    for profile in scene.PROFILES:
+                        for display in scene.DISPLAYS:
+                            _write_receipt(self.root, _receipt_name(row["id"], profile, display),
+                                           _qualified_receipt(row["id"], profile, display, **{field: "0" * 40}))
+                _assert_problem(self, scene.check_scene_set(_SET_PATH, self.obj, self.ctx),
+                                field + " does not match expected_" + field)
+                stale = dict(self.receipt, **{field: "0" * 40})
+                _assert_problem(self, scene.check_scene_receipt(_RECEIPT_PATH, stale, self.ctx),
+                                field + " does not match expected_" + field)
+                _write_full_receipts(self.root)
+
+    def test_malformed_programmatic_context_is_a_problem(self):
+        for field, value, reason in (
+                ("expected_engine_revision", "A" * 40, "must be 40 lowercase hex digits"),
+                ("expected_game_revision", 7, "must be 40 lowercase hex digits"),
+                ("artifact_root", "", "must be a nonempty existing directory"),
+                ("artifact_root", str(self.root / "missing"), "must be a nonempty existing safe directory")):
+            with self.subTest(field=field, value=value):
+                ctx = replace(self.ctx, **{field: value})
+                for release in (True, False):
+                    _assert_problem(self, scene.check_scene_receipt(
+                        _RECEIPT_PATH, self.receipt, replace(ctx, release=release)), reason)
+
+    def test_exact_canonical_store_ignores_aliases_but_never_uses_them(self):
+        store = self.root / "artifacts"
+        leaf = store / "sha256" / _CAPTURE_HASH
+        (store / _CAPTURE_HASH).write_bytes(b"unrelated bad alias")
+        (store / "sha256" / (_CAPTURE_HASH + ".json")).write_bytes(b"unrelated")
+        self.assertEqual(scene.check_scene_receipt(_RECEIPT_PATH, self.receipt, self.ctx), [])
+        leaf.unlink()
+        (store / _CAPTURE_HASH).write_bytes(_CAPTURE)
+        (store / "sha256" / (_CAPTURE_HASH + ".json")).write_bytes(_CAPTURE)
+        _assert_problem(self, scene.check_scene_receipt(_RECEIPT_PATH, self.receipt, self.ctx),
+                        "capture artifact: cannot read file")
+
+    def test_capture_mismatch_nonregular_and_unreadable_refuse(self):
+        leaf = self.root / "artifacts" / "sha256" / _CAPTURE_HASH
+        leaf.write_bytes(b"wrong bytes")
+        _assert_problem(self, scene.check_scene_receipt(_RECEIPT_PATH, self.receipt, self.ctx),
+                        "capture_sha256 does not match captured artifact bytes")
+        leaf.unlink()
+        leaf.mkdir()
+        _assert_problem(self, scene.check_scene_receipt(_RECEIPT_PATH, self.receipt, self.ctx),
+                        "capture artifact: nonregular file refused")
+        leaf.rmdir()
+        leaf.write_bytes(_CAPTURE)
+        original_open = scene.os.open
+
+        def unreadable(path, flags):
+            if Path(path) == leaf:
+                raise PermissionError("injected unreadable capture")
+            return original_open(path, flags)
+
+        with mock.patch.object(scene.os, "open", side_effect=unreadable):
+            _assert_problem(self, scene.check_scene_receipt(_RECEIPT_PATH, self.receipt, self.ctx),
+                            "injected unreadable capture")
+
+    def test_capture_store_non_directory_and_observable_reparse_refuse(self):
+        store = self.root / "artifacts" / "sha256"
+        (store / _CAPTURE_HASH).unlink()
+        store.rmdir()
+        store.write_bytes(b"not a directory")
+        _assert_problem(self, scene.check_scene_receipt(_RECEIPT_PATH, self.receipt, self.ctx),
+                        "capture artifact: non-directory path refused")
+        store.unlink()
+        store.mkdir()
+        (store / _CAPTURE_HASH).write_bytes(_CAPTURE)
+        original = scene.os.lstat
+
+        def reparse(path):
+            info = original(path)
+            if Path(path) == store:
+                return type("ReparseInfo", (), {"st_mode": info.st_mode,
+                                                "st_file_attributes": 0x400})()
+            return info
+
+        with mock.patch.object(scene.os, "lstat", side_effect=reparse):
+            _assert_problem(self, scene.check_scene_receipt(_RECEIPT_PATH, self.receipt, self.ctx),
+                            "symlink or reparse point refused")
+
+    def test_symlink_leaf_store_root_and_ancestor_refuse(self):
+        # This test alone may skip; ordinary failures/races do not require symlinks.
+        target = self.root / "safe-target"
+        target.mkdir()
+        probe = self.root / "probe-link"
+        try:
+            probe.symlink_to(target, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable")
+        probe.unlink()
+        store = self.root / "artifacts" / "sha256"
+        leaf = store / _CAPTURE_HASH
+        leaf.rename(target / _CAPTURE_HASH)
+        leaf.symlink_to(target / _CAPTURE_HASH)
+        _assert_problem(self, scene.check_scene_receipt(_RECEIPT_PATH, self.receipt, self.ctx),
+                        "symlink or reparse point refused")
+        leaf.unlink()
+        store.rmdir()
+        store.symlink_to(target, target_is_directory=True)
+        _assert_problem(self, scene.check_scene_receipt(_RECEIPT_PATH, self.receipt, self.ctx),
+                        "symlink or reparse point refused")
+        store.unlink()
+        alias = self.root / "artifact-alias"
+        alias.symlink_to(target, target_is_directory=True)
+        for root in (alias, alias / "child"):
+            (target / "child").mkdir(exist_ok=True)
+            _assert_problem(self, scene.check_scene_receipt(
+                _RECEIPT_PATH, self.receipt, replace(self.ctx, artifact_root=str(root))),
+                "symlink or reparse point refused")
+
+    def test_streaming_detects_change_replacement_and_truncation(self):
+        leaf = self.root / "artifacts" / "sha256" / _CAPTURE_HASH
+        for kind in ("truncate", "modify"):
+            with self.subTest(kind=kind):
+                leaf.write_bytes(_CAPTURE)
+                digest = hashlib.sha256()
+
+                def consume(chunk):
+                    digest.update(chunk)
+                    if kind == "truncate":
+                        leaf.write_bytes(b"")
+                    else:
+                        leaf.write_bytes(b"x" * len(_CAPTURE))
+
+                with self.assertRaisesRegex(scene.SceneError, "changed during reading"):
+                    scene.stream_safe_file(str(leaf), "capture", consume)
+
+    def test_post_read_replacement_is_refused_on_all_platforms(self):
+        leaf = self.root / "artifacts" / "sha256" / _CAPTURE_HASH
+        original = scene.safe_path_chain
+        calls = []
+
+        def replace_before_postcheck(full, where, *, directory=False):
+            if Path(full) == leaf:
+                calls.append(1)
+                if len(calls) == 2:
+                    # The read descriptor is closed before this boundary, including Windows.
+                    other = leaf.with_name("post-read-replacement")
+                    other.write_bytes(_CAPTURE)
+                    os.replace(other, leaf)
+            return original(full, where, directory=directory)
+
+        with mock.patch.object(scene, "safe_path_chain", side_effect=replace_before_postcheck):
+            _assert_problem(self, scene.check_scene_receipt(_RECEIPT_PATH, self.receipt, self.ctx),
+                            "file or ancestor changed during reading")
+        self.assertEqual(len(calls), 2)
+
+    def test_pre_open_replacement_is_refused(self):
+        leaf = self.root / "artifacts" / "sha256" / _CAPTURE_HASH
+        original = scene.os.open
+
+        def changed(path, flags):
+            if Path(path) == leaf:
+                other = leaf.with_name("replacement")
+                other.write_bytes(_CAPTURE)
+                os.replace(other, leaf)
+            return original(path, flags)
+
+        with mock.patch.object(scene.os, "open", side_effect=changed):
+            _assert_problem(self, scene.check_scene_receipt(_RECEIPT_PATH, self.receipt, self.ctx),
+                            "file changed before reading")
+
+    def test_row_disposition_verdict_and_note_match_each_profile_and_display(self):
+        for row in _rows(self.obj):
+            for profile in scene.PROFILES:
+                for display in scene.DISPLAYS:
+                    for change in ({"verdict": "waived-with-reason"}, {"note": "different note"},
+                                   {"note": "qualified on the native run "}):
+                        with self.subTest(row=row["id"], profile=profile, display=display, change=change):
+                            receipt = _qualified_receipt(row["id"], profile, display)
+                            receipt["disposition"].update(change)
+                            name = _receipt_name(row["id"], profile, display)
+                            _write_receipt(self.root, name, receipt)
+                            reason = "disposition does not match the scene set row '%s' profile '%s'" % (row["id"], profile)
+                            _assert_problem(self, scene.check_scene_receipt(_receipt_path(name), receipt, self.ctx), reason)
+                            _assert_problem(self, scene.check_scene_set(_SET_PATH, self.obj, self.ctx), reason)
+                            _write_receipt(self.root, name, _qualified_receipt(row["id"], profile, display))
+
+    def test_nested_receipts_use_validated_snapshot_without_reloading_scene_set(self):
+        changed = copy.deepcopy(self.obj)
+        changed["stations"][0]["dispositions"]["quality"]["note"] = "changed on disk"
+        (self.root / _SET_PATH).write_bytes((json.dumps(changed) + "\n").encode("utf-8"))
+        self.assertEqual(scene.check_scene_set(_SET_PATH, self.obj, self.ctx), [])
+        receipt = _qualified_receipt("tunnel-interior", "quality", "3840x1600")
+        _assert_problem(self, scene.check_scene_receipt(_RECEIPT_PATH, receipt, self.ctx),
+                        "disposition does not match the scene set row 'tunnel-interior'")
+
+    def test_direct_receipt_validates_required_row_without_releasing_other_rows(self):
+        obj = _scene_set()
+        obj["stations"][1] = copy.deepcopy(self.obj["stations"][1])
+        (self.root / _SET_PATH).write_bytes((json.dumps(obj) + "\n").encode("utf-8"))
+        self.assertEqual(scene.check_scene_receipt(_RECEIPT_PATH, self.receipt, self.ctx), [])
+        _assert_problem(self, scene.check_scene_set(_SET_PATH, obj, self.ctx),
+                        "status pending-native-discovery is not allowed in this mode")
+
+    def test_matching_waiver_never_bypasses_any_numeric_gate(self):
+        waiver = {"verdict": "waived-with-reason", "note": "matching reason"}
+        self.obj["stations"][1]["dispositions"]["quality"] = waiver
+        (self.root / _SET_PATH).write_bytes((json.dumps(self.obj) + "\n").encode("utf-8"))
+        for changes, reason in (({"settled": False}, "settled is false"),
+                                ({"tiers": [{"tier": 0, "complete": False}]}, "tier 0 is incomplete"),
+                                ({"below_horizon_sky_percent": 2.5}, "exceeds 2"),
+                                ({"seam_bands": 1}, "seam_bands 1 is not 0"),
+                                ({"outer_edge": True}, "outer_edge is true")):
+            receipt = dict(self.receipt, disposition=waiver, **changes)
+            _assert_problem(self, scene.check_scene_receipt(_RECEIPT_PATH, receipt, self.ctx),
+                            "release requires a qualified receipt; failing:")
+            _assert_problem(self, scene.check_scene_receipt(_RECEIPT_PATH, receipt, self.ctx), reason)
+
+
+    def test_matching_waiver_cannot_bypass_settle_time_limit(self):
+        waiver = {"verdict": "waived-with-reason", "note": "matching reason"}
+        self.obj["stations"][1]["dispositions"]["quality"] = waiver
+        (self.root / _SET_PATH).write_bytes((json.dumps(self.obj) + "\n").encode("utf-8"))
+        receipt = dict(self.receipt, disposition=waiver, settle_seconds=91)
+        _assert_problem(self, scene.check_scene_receipt(_RECEIPT_PATH, receipt, self.ctx),
+                        "settle_seconds must be at most 90 when settled")
+
+    def test_stream_reads_bounded_chunks_without_limiting_total_size(self):
+        capture = self.root / "large-capture"
+        raw = (b"\x00\xffbinary capture\n" * 150000) + b"tail"
+        capture.write_bytes(raw)
+        actual = hashlib.sha256()
+        sizes = []
+
+        def consume(chunk):
+            sizes.append(len(chunk))
+            actual.update(chunk)
+
+        scene.stream_safe_file(str(capture), "large capture", consume)
+        self.assertGreater(len(sizes), 1)
+        self.assertLessEqual(max(sizes), 1024 * 1024)
+        self.assertEqual(sum(sizes), len(raw))
+        self.assertEqual(actual.hexdigest(), hashlib.sha256(raw).hexdigest())
+
+    def test_opened_file_type_is_checked_independently_of_path_check(self):
+        leaf = self.root / "artifacts" / "sha256" / _CAPTURE_HASH
+        original_open = scene.os.open
+        original_fstat = scene.os.fstat
+        capture_fds = []
+
+        def track_open(path, flags):
+            fd = original_open(path, flags)
+            if Path(path) == leaf:
+                capture_fds.append(fd)
+            return fd
+
+        def directory_fstat(fd):
+            if fd in capture_fds:
+                return (self.root / "artifacts").stat()
+            return original_fstat(fd)
+
+        with mock.patch.object(scene.os, "open", side_effect=track_open), \
+                mock.patch.object(scene.os, "fstat", side_effect=directory_fstat):
+            _assert_problem(self, scene.check_scene_receipt(_RECEIPT_PATH, self.receipt, self.ctx),
+                            "capture artifact: opened file is nonregular or a reparse point")
+
+
+def _receipt_path(name):
+    return "content/receipts/" + name
 
 
 if __name__ == "__main__":

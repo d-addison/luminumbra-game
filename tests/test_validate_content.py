@@ -404,5 +404,92 @@ class MainTest(_ContentTest):
         self.assertEqual(out.getvalue().splitlines(), ["content: symlink or non-directory is not allowed"])
 
 
+class SceneContextCompatibilityTest(_ContentTest):
+    def test_five_positional_arguments_and_three_field_context_remain_compatible(self):
+        from validators import Context
+        seen = []
+
+        def capture(path, obj, ctx):
+            seen.append(ctx)
+            return []
+
+        self.write("content/items/a.json", '{"schema": "%s"}\n' % SCHEMA)
+        self.assertEqual(validate_content.validate_tree(str(self.root), False, True,
+                                                       {SCHEMA: capture}, {}), [])
+        ctx = Context(str(self.root), False, True)
+        self.assertEqual(seen, [ctx])
+        self.assertIsNone(ctx.expected_engine_revision)
+        self.assertIsNone(ctx.expected_game_revision)
+        self.assertIsNone(ctx.artifact_root)
+
+    def test_keyword_only_context_reaches_unrelated_release_schema(self):
+        seen = []
+
+        def capture(path, obj, ctx):
+            seen.append(ctx)
+            return []
+
+        self.write("content/items/a.json", '{"schema": "%s"}\n' % SCHEMA)
+        self.assertEqual(validate_content.validate_tree(
+            str(self.root), False, True, {SCHEMA: capture}, {},
+            expected_engine_revision="1" * 40, expected_game_revision="2" * 40,
+            artifact_root=str(self.root)), [])
+        self.assertEqual(seen[0].expected_engine_revision, "1" * 40)
+        self.assertEqual(seen[0].expected_game_revision, "2" * 40)
+        self.assertEqual(seen[0].artifact_root, str(self.root))
+        with self.assertRaises(TypeError):
+            validate_content.validate_tree(str(self.root), False, True, {}, {}, "1" * 40)
+
+    def test_malformed_cli_flags_exit_2_even_on_empty_nonrelease_tree(self):
+        for mode in ([], ["--allow-pending"], ["--release"]):
+            for flag, value, reason in (
+                    ("--expected-engine-revision", "A" * 40, "revision must be 40 lowercase hex digits"),
+                    ("--expected-game-revision", "0" * 39, "revision must be 40 lowercase hex digits"),
+                    ("--artifact-root", "", "artifact root must be a nonempty existing directory"),
+                    ("--artifact-root", str(self.root / "missing"), "artifact root must be a nonempty existing directory")):
+                with self.subTest(mode=mode, flag=flag, value=value):
+                    out, err = io.StringIO(), io.StringIO()
+                    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                        code = validate_content.main(["--root", str(self.root), flag, value] + mode)
+                    self.assertEqual(code, 2)
+                    self.assertIn(reason, err.getvalue())
+                    self.assertEqual(out.getvalue(), "")
+        self.write("not-a-directory", "data")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(validate_content.main(["--root", str(self.root), "--artifact-root",
+                                                    str(self.root / "not-a-directory")]), 2)
+        self.assertIn("artifact root must be a nonempty existing directory", err.getvalue())
+
+    def test_programmatic_malformed_context_returns_problems_even_empty(self):
+        self.assertEqual(validate_content.validate_tree(str(self.root), False, False, {}, {},
+                                                       expected_game_revision=10),
+                         ["context: expected_game_revision must be 40 lowercase hex digits"])
+        self.assertEqual(validate_content.validate_tree(str(self.root), False, False, {}, {}, artifact_root=""),
+                         ["context: artifact_root must be a nonempty existing directory"])
+
+    def test_missing_scene_release_flags_exit_1_individually_with_complete_prerequisites(self):
+        # Source fixtures are synthetic and never authenticate native measurements.
+        from test_scenes import (_release_root, _write_full_receipts, _SET_PATH,
+                                 _discovered_set, _ENGINE, _GAME)
+        root = _release_root(self)
+        _write_full_receipts(root)
+        (root / _SET_PATH).write_bytes((json.dumps(_discovered_set()) + "\n").encode("utf-8"))
+        flags = [("--expected-engine-revision", _ENGINE, "expected_engine_revision"),
+                 ("--expected-game-revision", _GAME, "expected_game_revision"),
+                 ("--artifact-root", str(root / "artifacts"), "artifact_root")]
+        complete = [item for flag, value, _ in flags for item in (flag, value)]
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(validate_content.main(["--root", str(root), "--release"] + complete), 0)
+        self.assertIn("content ok", out.getvalue())
+        for omitted, _, field in flags:
+            with self.subTest(field=field):
+                supplied = [item for flag, value, _ in flags if flag != omitted for item in (flag, value)]
+                with contextlib.redirect_stdout(io.StringIO()) as out:
+                    code = validate_content.main(["--root", str(root), "--release"] + supplied)
+                self.assertEqual(code, 1)
+                self.assertIn("scene release requires " + field, out.getvalue())
+                self.assertNotIn("validator raised", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -25,6 +25,8 @@ import os
 import posixpath
 import re
 import struct
+import stat
+from dataclasses import replace
 from decimal import Decimal
 
 from lumlib import identity, schema
@@ -375,14 +377,158 @@ def _reason(exc, full):
     return text[len(prefix):] if text.startswith(prefix) else text
 
 
+def path_identity(info):
+    """Identity/type metadata, including observable Windows reparse attributes."""
+    return (info.st_dev, info.st_ino, info.st_mode,
+            getattr(info, "st_file_attributes", 0) & 0x400, getattr(info, "st_reparse_tag", 0))
+
+
+def file_version(info):
+    return path_identity(info) + (info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _unsafe_info(info):
+    return (stat.S_ISLNK(info.st_mode) or
+            bool(getattr(info, "st_file_attributes", 0) & 0x400) or
+            bool(getattr(info, "st_reparse_tag", 0)))
+
+
+def safe_path_chain(full, where, *, directory=False):
+    """Inspect every lexical ancestor and the leaf, without resolving unsafe aliases."""
+    full = os.path.abspath(full)
+    paths = []
+    current = full
+    while True:
+        paths.append(current)
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    result = {}
+    for current in reversed(paths):
+        info = os.lstat(current)
+        if _unsafe_info(info):
+            _fail(where, "symlink or reparse point refused: %s" % current)
+        is_dir = current != full or directory
+        if is_dir and not stat.S_ISDIR(info.st_mode):
+            _fail(where, "non-directory path refused: %s" % current)
+        if not is_dir and not stat.S_ISREG(info.st_mode):
+            _fail(where, "nonregular file refused: %s" % current)
+        result[current] = info
+    return result
+
+
+def stream_safe_file(full, where, consume, *, expected_size=None):
+    """Bounded reads with pre/open/post checks; no universal hostile-race guarantee."""
+    full = os.path.abspath(full)
+    try:
+        before = safe_path_chain(full, where)
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        flags |= getattr(os, "O_NONBLOCK", 0)
+        fd = os.open(full, flags)
+        try:
+            opened = os.fstat(fd)
+            if _unsafe_info(opened) or not stat.S_ISREG(opened.st_mode):
+                _fail(where, "opened file is nonregular or a reparse point")
+            if file_version(before[full]) != file_version(opened):
+                _fail(where, "file changed before reading")
+            if expected_size is not None and opened.st_size != expected_size:
+                _fail(where, "file changed before reading")
+            size = opened.st_size if expected_size is None else expected_size
+            count = 0
+            # fdopen owns the descriptor only after construction succeeds.
+            handle = os.fdopen(fd, "rb", buffering=0)
+            fd = None
+            with handle:
+                while True:
+                    # Read only the observed size plus one growth probe byte.
+                    # A continuously appending writer must not postpone refusal.
+                    chunk = handle.read(min(1024 * 1024, size - count + 1))
+                    if not chunk:
+                        break
+                    count += len(chunk)
+                    if count > size:
+                        _fail(where, "file or ancestor changed during reading (size increased)")
+                    consume(chunk)
+                after_open = os.fstat(handle.fileno())
+            after = safe_path_chain(full, where)
+            if (count != opened.st_size or file_version(opened) != file_version(after_open)
+                    or file_version(opened) != file_version(after[full])
+                    or any(path_identity(info) != path_identity(after[path])
+                           for path, info in before.items())):
+                _fail(where, "file or ancestor changed during reading")
+        finally:
+            if fd is not None:
+                os.close(fd)
+    except OSError as exc:
+        _fail(where, "cannot read file %s: %s" % (full, exc.strerror or exc))
+
+
+def safe_file_bytes(full, where):
+    chunks = []
+    stream_safe_file(full, where, chunks.append)
+    return b"".join(chunks)
+
+
+def _check_scene_context(path, ctx):
+    for field in ("expected_engine_revision", "expected_game_revision"):
+        value = getattr(ctx, field)
+        if value is None:
+            if ctx.release:
+                _fail(path, "scene release requires %s" % field)
+        elif not _matches(_REVISION_RE, value):
+            _fail(path, "%s must be 40 lowercase hex digits" % field)
+    value = ctx.artifact_root
+    if value is None:
+        if ctx.release:
+            _fail(path, "scene release requires artifact_root")
+    else:
+        try:
+            if (not isinstance(value, (str, os.PathLike)) or
+                    not isinstance(os.fspath(value), str) or not os.fspath(value)):
+                _fail(path, "artifact_root must be a nonempty existing directory")
+            safe_path_chain(value, path, directory=True)
+        except (OSError, TypeError, ValueError) as exc:
+            if isinstance(exc, SceneError):
+                raise
+            _fail(path, "artifact_root must be a nonempty existing safe directory: %s" % exc)
+
+
+def _verify_capture(path, digest, ctx):
+    full = os.path.join(ctx.artifact_root, "sha256", digest)
+    actual = hashlib.sha256()
+    stream_safe_file(full, path + ": capture artifact", actual.update)
+    if actual.hexdigest() != digest:
+        _fail(path, "capture_sha256 does not match captured artifact bytes")
+
+
+def _check_receipt_row(path, receipt, row):
+    row_id = row["id"]
+    if row["status"] != STATUS_DISCOVERED:
+        _fail(path, "release requires scene set row '%s' status discovered" % row_id)
+    for field in ("wanted_set_sha256", "coverage_sha256"):
+        if receipt[field] != row["qualification"][field]:
+            _fail(path, "%s does not match the scene set row '%s'" % (field, row_id))
+    if _tier_pairs(receipt["tiers"]) != _tier_pairs(row["qualification"]["tiers"]):
+        _fail(path, "tiers do not match the scene set row '%s'" % row_id)
+    if receipt["disposition"] != row["dispositions"][receipt["profile"]]:
+        _fail(path, "disposition does not match the scene set row '%s' profile '%s' (verdict and note)"
+              % (row_id, receipt["profile"]))
+
+
 def _load_committed(where, root, rel):
     """Load a committed JSON file under ROOT; a failure is reported against WHERE."""
     full = _abs(root, rel)
     if not os.path.isfile(full):
         _fail(where, "missing %s" % rel)
     try:
-        return schema.load_json_file(full)
-    except SchemaError as exc:
+        raw = safe_file_bytes(full, where)
+        text = raw.decode("utf-8")
+        _text_rules(where, text)
+        return schema.loads_document(text)
+    except (ValueError, UnicodeDecodeError) as exc:
+        if isinstance(exc, SceneError):
+            raise
         _fail(where, "%s is not valid JSON: %s" % (rel, _reason(exc, full)))
 
 
@@ -505,7 +651,7 @@ def _check_cave_dense_keys(path, params):
             _fail(path, "%s has unknown key '%s'" % (dotted, key))
 
 
-def _check_preset(path, text, ctx):
+def _check_preset(path, text):
     _text_rules(path, text)
     try:
         obj = identity.loads_strict(text)
@@ -535,12 +681,9 @@ def _check_preset(path, text, ctx):
     _check_shape(path, "generation_params", params, PRESET_SHAPE)
     if name == CAVE_DENSE:
         _check_cave_dense_keys(path, params)
-    sidecar = PRESET_DIR + "/" + name + IDENTITY_SUFFIX
-    if not os.path.isfile(_abs(ctx.root, sidecar)):
-        _fail(path, "missing identity sidecar %s" % sidecar)
 
 
-def _check_sidecar(path, text, ctx):
+def _sidecar_header(path, text):
     _text_rules(path, text)
     try:
         obj = schema.loads_document(text)
@@ -556,14 +699,13 @@ def _check_sidecar(path, text, ctx):
     if obj["preset"] != stem:
         _fail(path, "preset must equal the file stem '%s'" % stem)
     sibling = PRESET_DIR + "/" + obj["preset"] + JSON_SUFFIX
-    sibling_full = _abs(ctx.root, sibling)
-    if not os.path.isfile(sibling_full):
-        _fail(path, "missing sibling preset %s" % sibling)
-    try:
-        with open(sibling_full, "rb") as handle:
-            raw = handle.read()
-    except OSError:
-        _fail(path, "cannot read sibling preset %s" % sibling)
+    return obj, sibling
+
+
+def _check_sidecar(path, text, raw):
+    obj, sibling = _sidecar_header(path, text)
+    if not isinstance(raw, bytes):
+        _fail(path, "missing sibling preset snapshot %s" % sibling)
     if not _matches(_SHA256_RE, obj["file_sha256"]):
         _fail(path, "file_sha256 must be 64 lowercase hex digits")
     if obj["file_sha256"] != hashlib.sha256(raw).hexdigest():
@@ -582,15 +724,45 @@ def _check_sidecar(path, text, ctx):
         _fail(path, "preset_identity does not match the sibling preset %s" % sibling)
 
 
+def check_preset_snapshots(path, preset_bytes, sidecar_bytes):
+    """Pure validation of the exact pair captured for export; never reads disk."""
+    sidecar = path[:-len(JSON_SUFFIX)] + IDENTITY_SUFFIX
+    where = path
+    try:
+        if posixpath.dirname(path) != PRESET_DIR or not path.endswith(JSON_SUFFIX):
+            _fail(path, "preset files must live in content/presets/")
+        if not isinstance(preset_bytes, bytes):
+            _fail(path, "missing preset snapshot")
+        _check_preset(path, preset_bytes.decode("utf-8"))
+        where = sidecar
+        if not isinstance(sidecar_bytes, bytes):
+            _fail(sidecar, "missing identity sidecar snapshot")
+        _check_sidecar(sidecar, sidecar_bytes.decode("utf-8"), preset_bytes)
+    except UnicodeDecodeError:
+        return ["%s: not valid UTF-8" % where]
+    except (SceneError, SchemaError) as exc:
+        return [str(exc)]
+    except RecursionError:
+        return ["%s: json nesting is too deep" % where]
+    return []
+
+
 def check_preset_file(path, text, ctx):
     """Validator for content/presets/*.json: presets and their .identity.json sidecars."""
     try:
         if posixpath.dirname(path) != PRESET_DIR:
             _fail(path, "preset files must live in content/presets/")
         if path.endswith(IDENTITY_SUFFIX):
-            _check_sidecar(path, text, ctx)
+            _, sibling = _sidecar_header(path, text)
+            if not os.path.isfile(_abs(ctx.root, sibling)):
+                _fail(path, "missing sibling preset %s" % sibling)
+            raw = safe_file_bytes(_abs(ctx.root, sibling), path)
+            _check_sidecar(path, text, raw)
         else:
-            _check_preset(path, text, ctx)
+            _check_preset(path, text)
+            sidecar = PRESET_DIR + "/" + _stem(path, JSON_SUFFIX) + IDENTITY_SUFFIX
+            if not os.path.isfile(_abs(ctx.root, sidecar)):
+                _fail(path, "missing identity sidecar %s" % sidecar)
     except (SceneError, SchemaError) as exc:
         return [str(exc)]
     except RecursionError:
@@ -760,7 +932,7 @@ def _check_notes(path, notes):
         )
 
 
-def _check_release(path, obj, ctx):
+def _check_release(path, obj, ctx, *, scan_receipts=True):
     if obj["status"] != STATUS_DISCOVERED:
         _fail(path, "release requires status discovered")
     for label in ("stations", "controls", "coverage"):
@@ -782,10 +954,12 @@ def _check_release(path, obj, ctx):
                     _fail(where, "release requires a disposition for %s" % profile)
                 if disposition["verdict"] not in RELEASE_VERDICTS:
                     _fail(where, "release refuses verdict '%s' for %s" % (disposition["verdict"], profile))
-    _check_native_evidence(path, obj, ctx)
+    if scan_receipts:
+        _check_native_evidence(path, obj, ctx)
 
 
-def _check_scene_set(path, obj, ctx):
+def _check_scene_set(path, obj, ctx, *, scan_receipts=True):
+    _check_scene_context(path, ctx)
     schema.check_schema_id(obj, SCENE_SET_SCHEMA, path)
     schema.check_keys(obj, SCENE_SET_KEYS, set(), path)
     if posixpath.dirname(path) != SCENE_DIR or not path.endswith(JSON_SUFFIX):
@@ -818,7 +992,7 @@ def _check_scene_set(path, obj, ctx):
     if obj["status"] == STATUS_DISCOVERED and any(status != STATUS_DISCOVERED for status in statuses):
         _fail(path, "status discovered requires every station, control and coverage row to be discovered")
     if ctx.release:
-        _check_release(path, obj, ctx)
+        _check_release(path, obj, ctx, scan_receipts=scan_receipts)
 
 
 def check_scene_set(path, obj, ctx):
@@ -861,7 +1035,8 @@ def _failing_quantities(obj):
     return failing
 
 
-def _check_receipt(path, obj, ctx):
+def _check_receipt(path, obj, ctx, scene_set=None):
+    _check_scene_context(path, ctx)
     base = posixpath.basename(path)
     if posixpath.dirname(path) != RECEIPT_DIR or not base.startswith(RECEIPT_PREFIX) or not base.endswith(JSON_SUFFIX):
         _fail(path, "scene receipts must be content/receipts/scene-*.json")
@@ -870,13 +1045,19 @@ def _check_receipt(path, obj, ctx):
     if obj["scene_set"] != SCENE_SET_ID:
         _fail(path, "scene_set must be '%s'" % SCENE_SET_ID)
 
-    scene_set = _load_committed(path, ctx.root, SCENE_DIR + "/" + SCENE_SET_ID + JSON_SUFFIX)
+    if scene_set is None:
+        set_path = SCENE_DIR + "/" + SCENE_SET_ID + JSON_SUFFIX
+        scene_set = _load_committed(path, ctx.root, set_path)
+        _check_scene_set(set_path, scene_set,
+                         replace(ctx, release=False, allow_pending=True), scan_receipts=False)
     presets = {}
+    row_index = {}
     for label in ("stations", "controls", "coverage"):
         rows = scene_set.get(label) if isinstance(scene_set, dict) else None
         for row in rows if isinstance(rows, list) else []:
             if isinstance(row, dict):
                 presets[row.get("id")] = row.get("preset")
+                row_index[row["id"]] = row
     station = obj["station"]
     if not isinstance(station, str) or station not in presets:
         _fail(path, "unknown station '%s'" % (station,))
@@ -934,10 +1115,15 @@ def _check_receipt(path, obj, ctx):
     if failing and verdict not in UNQUALIFIED_VERDICTS:
         _fail(path, "a receipt that is not qualified must have disposition defect-open or waived-with-reason")
     if ctx.release:
+        for field in ("engine_revision", "game_revision"):
+            if obj[field] != getattr(ctx, "expected_" + field):
+                _fail(path, "%s does not match expected_%s" % (field, field))
         if failing:
             _fail(path, "release requires a qualified receipt; failing: %s" % "; ".join(failing))
         if verdict not in RELEASE_VERDICTS:
             _fail(path, "release requires disposition accepted or waived-with-reason")
+        _check_receipt_row(path, obj, row_index[station])
+        _verify_capture(path, obj["capture_sha256"], ctx)
 
 
 def _receipt_files(ctx):
@@ -953,7 +1139,7 @@ def _tier_pairs(tiers):
     return [(item["tier"], item["complete"]) for item in tiers]
 
 
-def _load_receipts(ctx):
+def _load_receipts(ctx, scene_set):
     """Check every committed receipt as a release receipt and index it by (station, profile, display)."""
     index = {}
     for name in _receipt_files(ctx):
@@ -962,7 +1148,7 @@ def _load_receipts(ctx):
             data = _load_committed(rel, ctx.root, rel)
         except RecursionError:
             _fail(rel, "json nesting is too deep")
-        _check_receipt(rel, data, ctx)
+        _check_receipt(rel, data, ctx, scene_set)
         key = (data["station"], data["profile"], data["display"])
         if key in index:
             _fail(
@@ -976,14 +1162,14 @@ def _load_receipts(ctx):
 
 def _check_native_evidence(path, obj, ctx):
     """Release: every row needs one qualified receipt per profile and display, matching the row."""
-    receipts = _load_receipts(ctx)
+    _check_scene_context(path, ctx)
+    receipts = _load_receipts(ctx, obj)
     for field in ("game_revision", "engine_revision"):
         if len({receipt[field] for _, receipt in receipts.values()}) > 1:
             _fail(path, "release requires one %s across all scene receipts" % field)
     for label in ("stations", "controls", "coverage"):
         for row in obj[label]:
             row_id = row["id"]
-            qualification = row["qualification"]
             identities = {}
             preset_values = set()
             content_values = set()
@@ -997,12 +1183,6 @@ def _check_native_evidence(path, obj, ctx):
                             "release requires a scene receipt for station '%s' profile '%s' display '%s'" % key,
                         )
                     rel, receipt = receipts[key]
-                    if receipt["wanted_set_sha256"] != qualification["wanted_set_sha256"]:
-                        _fail(rel, "wanted_set_sha256 does not match the scene set row '%s'" % row_id)
-                    if receipt["coverage_sha256"] != qualification["coverage_sha256"]:
-                        _fail(rel, "coverage_sha256 does not match the scene set row '%s'" % row_id)
-                    if _tier_pairs(receipt["tiers"]) != _tier_pairs(qualification["tiers"]):
-                        _fail(rel, "tiers do not match the scene set row '%s'" % row_id)
                     values.add(receipt["scene_identity"])
                     preset_values.add(receipt["preset_identity"])
                     content_values.add(receipt["content_identity"])

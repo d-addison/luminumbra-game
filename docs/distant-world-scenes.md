@@ -139,18 +139,50 @@ complete, `below_horizon_sky_percent` is at most 2, `seam_bands` is 0, and
   with the matching `station`, `profile` and `display`. Each such receipt must
   be a qualified receipt that passes the receipt rules, whose disposition
   verdict is `accepted` or `waived-with-reason`. Its `wanted_set_sha256`, `coverage_sha256` and `tiers` must equal
-  the row's recorded values. Missing, duplicate and inconsistent receipts are
+  the row's recorded values. The entire `disposition` object must equal
+  the row's `dispositions[profile]`, including exact verdict and note without
+  trimming or normalization. Both displays agree with that profile's authored
+  disposition. A matching waiver cannot bypass any numeric qualification gate.
+  Nested receipt validation uses the same validated scene-set snapshot; direct
+  receipt validation loads its row context once without recursively scanning
+  receipts or requiring unrelated rows to be released. Missing, duplicate and inconsistent receipts are
   refused. The `scene_identity` of a profile must be the same on both of its
   displays and must differ between `quality` and `performance` for the same row.
-  Every receipt must carry the same `game_revision` and the same
-  `engine_revision`; a release that mixes candidate revisions is refused with
-  `release requires one game_revision across all scene receipts` (or
-  `engine_revision`). The four receipts of one station (both profiles and both
-  displays) must also carry one `preset_identity` and one `content_identity`;
+  Every receipt must match the independently supplied
+  `--expected-game-revision` and `--expected-engine-revision` (each exactly 40
+  lowercase hex digits). Uniformly stale receipts and mixed candidate revisions
+  are refused. Neither pin is inferred from receipts, git HEAD or the engine
+  baseline. A receipt evidence commit may follow measurement: the explicit
+  measured game pin stays fixed, and owner review binds that measured candidate
+  to the package. Committing evidence must never silently advance that pin.
+  The four receipts of one station (both profiles and both displays) must also carry one `preset_identity` and one `content_identity`;
   a mismatch is refused with `release requires one preset_identity for station 'ID' across its receipts`
   (or `content_identity`). Different stations may carry different values. The
   committed JSON does not carry the identities; they are taken from the receipts. Pending mode (`--allow-pending`) does not require
   receipts.
+
+Scene release validation also requires `--artifact-root CAPTURE_ROOT`. For each
+receipt, the only capture locator is
+`CAPTURE_ROOT/sha256/<capture_sha256>`. A bare digest file or a `.json` alias
+cannot satisfy it; unrelated aliases are ignored. The unchanged
+`scene-receipt.v1` schema carries no extra artifact path or authentication field.
+The validator streams exact binary bytes in bounded chunks, with no arbitrary
+total-size cap, and compares their SHA-256. Missing, unreadable, symlink,
+nonregular and observable Windows reparse artifacts are refused, as are unsafe
+root/store/ancestor directories. Pre/open/post metadata checks include the
+opened file identity, size and modification metadata and detect observable
+replacement, truncation or modification. These checks establish byte integrity;
+they do not authenticate native execution, parse capture metrics or exclude
+every hostile filesystem race. Synthetic CI captures test format and integrity
+only and do not qualify native runs.
+
+All three context flags are optional for authoring and unrelated release
+schemas. When supplied, malformed revisions and empty, missing or non-directory
+artifact roots are usage errors (exit 2), even on an empty tree or outside release.
+Missing context for either direct scene release validator is a validation refusal
+(exit 1). The Python `validate_tree` API preserves its five positional arguments
+and adds these three options as keyword-only arguments; the corresponding
+`Context` fields default to `None`.
 
 ## Discovery oracle (NATIVE)
 
@@ -188,8 +220,9 @@ repository asserts that `cave_dense` has more surface cave openings than
 5. Apply the proposed rule: D must be at least 1.25 times C. Because a C of 0
    makes that rule vacuous, D must also be at least 1. Both thresholds are
    PROPOSED values. They are recorded here only as proposals and were never
-   measured. A measured threshold is written into the scene set only after the
-   native run supplies it.
+   measured. Recording measured cave-count thresholds requires a separate
+   schema decision: the current strict scene-set schema has no fields for those
+   counts or thresholds. This repair does not resolve that gap.
 6. The probe also has to record a cave opening beyond the 4 km noise-cave cutoff.
    The `arch-8km` and `horizon-16km` stations are the beyond-4 km cases.
 
@@ -215,15 +248,44 @@ No receipt is committed. Receipts are produced by the native run.
 `tools/export_engine_content.py` maps `content/presets/<name>.json` to
 `worlds/atlas/presets/<name>.json` in the engine layout. Sidecars are not
 exported, but each preset and its sibling `.identity.json` are validated before
-any output. A stale hash, a wrong identity or a malformed sidecar refuses the
-export.
+any output against the exact captured preset bytes. Capture loading is separate
+from pure pair validation: no validation reread, missing-snapshot fallback or
+silent retry can certify preset A using sidecar B. A consistent captured pair
+remains the exported snapshot if disk changes afterward. Manifest, output and
+`--check` use those same preset bytes. The exporter independently refuses
+missing sidecars, symlink/nonregular/reparse sources and observable unsafe
+ancestors; it does not assume the tree validator ran first. UTF-8, BOM/CR,
+strict JSON, filename/device, preset shape and identity rules still apply.
+A stale hash, wrong identity or malformed sidecar refuses the export.
 
 - With no option it prints the manifest, one `sha256  mapped/path` line per
   file.
 - `--out DIR` writes the mapped files, byte for byte, under `DIR`. `DIR` must be
   absent or empty. The destination is resolved, including symlinks, and refused
   when the resolved path has a `.git` component in any letter case, or lies
-  inside the `content/` tree (exit 2).
+  inside the `content/` tree (exit 2). Complete output is written and closed in
+  a uniquely owned sibling stage on the destination filesystem first. Publication
+  uses exclusive directory and file creates, never replacement or overwrite.
+  A preexisting empty destination keeps its directory identity on success and
+  every failure; validation, staging and prepublication failures leave it
+  untouched. Actual commit/rollback writes may change its mtime.
+- Ordinary export failure rolls back only unchanged paths created by that
+  invocation. With no external mutation, the destination returns to absent or
+  its original empty directory, permitting retry. Newly created parents are
+  removed only if still owned and empty. Zero mapped files may create an absent
+  destination or preserve an existing empty one.
+- Restriction, ancestor and destination identity checks repeat before commit
+  and each write. Observed disappearance, replacement, new population or a
+  newly appeared empty destination is refused. Exclusive creates protect
+  occupied leaves. Race failure preserves external files and directories, so
+  the destination may remain nonempty. Cleanup checks identity and ownership,
+  never recursively deletes the destination or unknown stage content, and
+  refuses success with retained paths and staging location when cleanup fails
+  or ownership is uncertain.
+- Publication has no whole-tree atomic visibility guarantee; readers may see
+  partial output during commit. The checks address ordinary failures and
+  observable cooperative writer races, without promising complete hostile
+  namespace race exclusion or persistence after a crash or power loss.
 - `--check ENGINE_ROOT` compares each mapped file with the engine copy and
   prints one `PATH: differs` or `PATH: missing` line for each mismatch. It exits
   0 only when every file matches.
@@ -258,8 +320,8 @@ out of scope for this page.
 | `preset_identity` | 16 lowercase hex digits; checked against the sidecar |
 | `content_identity` | 1 to 20 decimal digits |
 | `adapter` | contains the qualified renderer name `RTX 5070 Ti` |
-| `engine_revision`, `game_revision` | 40 lowercase hex digits; `game_revision` is the release-candidate SHA; every receipt in a release carries the same values |
-| `disposition` | `verdict` (`accepted`, `defect-open`, `defect-fixed`, `waived-with-reason`) and a non-empty `note` |
+| `engine_revision`, `game_revision` | 40 lowercase hex digits; `game_revision` is the measured game candidate SHA; every release receipt matches both explicit expected pins |
+| `disposition` | `verdict` (`accepted`, `defect-open`, `defect-fixed`, `waived-with-reason`) and a non-empty `note`; release requires exact equality with the matching row/profile object |
 
 ## Native handoff
 
@@ -273,8 +335,14 @@ command is not named at the baseline has no command and stays open.
 | Archive sha256 | record the sha256 of the release archive the run uses | the sha256 in the handoff record, next to the SHA | the sha256 is recorded with the RC SHA; no receipt field carries it yet | NEEDS-NATIVE-RUN |
 | Engine gate at baseline | From the engine repository root on the Windows machine: `powershell -File tools/gates/validate-engine-frontier.ps1 -Mode FarLodHorizon -BuildPreset debug -SmokeSeconds 50` | the gate runs presets `mountains`, `default` and `archipelago`; artifacts are written under `build/debug/test-artifacts/runtime/farlod-horizon-<preset>` | output recorded for the three presets; no wanted set is claimed from it; `cave_dense` is not run by this gate | NEEDS-NATIVE-RUN |
 | Station and control poses | no command named at the baseline | a pose per row | every row has a pose and status discovered; the arch-8km and horizon-16km cases are recorded | NEEDS-NATIVE-RUN (no command yet) |
-| Cave-count oracle | the discovery probe above, `caverns` and `cave_dense` in the fixed window | counts C and D, the rule outcome | both counts recorded; the threshold is recorded in the scene set only after it is measured | BLOCKED (counting instrument not available) |
-| Qualification of each row, profile and display | `FarLodHorizon` per-row evidence is not available | one scene receipt per row, profile and display | each receipt qualified, or carries an allowed non-accepted disposition | BLOCKED (engine instrumentation; engine acceptance workstream) |
+| Cave-count oracle | the discovery probe above, `caverns` and `cave_dense` in the fixed window | counts C and D, the rule outcome | both counts recorded; recording thresholds in the strict scene schema remains a separate unresolved decision | BLOCKED (counting instrument not available) |
+| Qualification of each row, profile and display | `FarLodHorizon` per-row evidence is not available | one scene receipt per row, profile and display | each receipt numerically qualified and carries an exact matching accepted or waived-with-reason disposition | BLOCKED (engine instrumentation; engine acceptance workstream) |
 | Identity echo for cave_dense | no command named at the baseline | the engine's reported identity for `cave_dense` | the reported identity equals the sidecar `preset_identity` | NEEDS-NATIVE-RUN (no command yet) |
 | Engine copy of the preset | `python3 -I tools/export_engine_content.py --out DIR`, then the engine copy, then `python3 -I tools/export_engine_content.py --check ENGINE_ROOT` | exported manifest and check output | `--check` exits 0 against the engine tree | PENDING engine pull request |
-| Release gate | `python3 -I tools/validate_content.py --root . --release` | validator output | exits 0 with no scene problems; all rows discovered and qualified | blocked until the rows above are complete |
+| Release gate | `python3 -I tools/validate_content.py --root . --release --expected-engine-revision ENGINE_SHA --expected-game-revision MEASURED_GAME_SHA --artifact-root CAPTURE_ROOT` | validator output | exits 0 with no scene problems; all rows discovered and qualified | blocked until the rows above are complete |
+
+Replace `ENGINE_SHA` and `MEASURED_GAME_SHA` with the independently recorded
+40-lowercase-hex revisions and `CAPTURE_ROOT` with the safe existing capture
+store directory. Native measurement authentication and cave-count schema
+recording remain unresolved separately. Every native row remains pending; no
+fabricated native receipt is committed by this source repair.
