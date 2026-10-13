@@ -58,6 +58,16 @@ def loads_document(text):
 def load_json_file(path):
     """Load a JSON file with strict encoding rules and Decimal floats."""
     data = Path(path).read_bytes()
+    return load_json_bytes(data, str(path))
+
+
+def load_json_bytes(data, where="document", *, max_bytes=None, final_lf=False):
+    """Parse captured bytes using the same strict loader, with optional author limits."""
+    path = where
+    if max_bytes is not None and len(data) > max_bytes:
+        raise SchemaError("%s: exceeds byte limit %d" % (path, max_bytes))
+    if final_lf and not data.endswith(b"\n"):
+        raise SchemaError("%s: missing final LF" % path)
     if data.startswith(_UTF8_BOM):
         raise SchemaError("%s: byte order mark is not allowed" % path)
     if b"\r" in data:

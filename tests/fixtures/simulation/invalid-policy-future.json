@@ -1,0 +1,18 @@
+{
+  "schema": "luminumbra.distant_policy.v2",
+  "creature_species": {
+    "grovestrider": {
+      "coarse_need_rate_ppm": 123,
+      "coarse_travel_m_per_cadence": 0,
+      "promote_distance_m": 65535,
+      "lifespan_cadences": 4294967295,
+      "reproduce_cadences": 0
+    }
+  },
+  "plant_species": {
+    "wheat": {
+      "max_cadence_shift": 8,
+      "resume_cap_ticks": 36000
+    }
+  }
+}
