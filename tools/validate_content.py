@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Validate the content tree under ROOT/content and the JSON files under ROOT/docs/evidence.
 
-Every .json file is parsed with lumlib.schema.load_json_file. A JSON file whose
+Every .json file is captured once and parsed with lumlib.schema.load_json_bytes. A JSON file whose
 path matches a GLOBS pattern is handed to that glob validator and need not carry
 a "schema" key. Any other JSON file, in either zone, must be an object whose
 "schema" key is a registered schema id; an unregistered or future schema id is
@@ -23,13 +23,15 @@ Exit codes: 0 ok or nothing to validate, 1 problems found, 2 usage error.
 import fnmatch
 import os
 import sys
+from dataclasses import replace
 
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 
 from lumlib.diagnostics import SingleLineParser, printable  # noqa: E402
-from lumlib.schema import SchemaError, load_json_file  # noqa: E402
+from lumlib.engine_inventory import MAX_DOCUMENT_BYTES, read_captured  # noqa: E402
+from lumlib.schema import SchemaError, load_json_bytes  # noqa: E402
 from validators import Context, RegistryError, discover  # noqa: E402
 
 
@@ -144,8 +146,9 @@ def _check_entry(root, rel, schemas, globs, ctx):
         return [f"{rel}: unrecognised content file"]
 
     try:
-        with open(full, "rb") as handle:
-            raw = handle.read()
+        raw = read_captured(full)
+    except SchemaError as exc:
+        return [printable(f"{rel}: {exc}")]
     except OSError as exc:
         return [f"{rel}: cannot read file: {exc.strerror}"]
     try:
@@ -157,7 +160,7 @@ def _check_entry(root, rel, schemas, globs, ctx):
         return _call(glob_fn, rel, text, ctx)
 
     try:
-        obj = load_json_file(full)
+        obj = load_json_bytes(raw, full, max_bytes=MAX_DOCUMENT_BYTES)
     except SchemaError as exc:
         return [printable(f"{rel}: {exc}")]
     except RecursionError:
@@ -167,7 +170,7 @@ def _check_entry(root, rel, schemas, globs, ctx):
 
     if glob_fn is not None:
         return _call(glob_fn, rel, text, ctx)
-    return _check_schema(rel, obj, schemas, ctx)
+    return _check_schema(rel, obj, schemas, replace(ctx, raw=raw))
 
 
 def validate_tree(root, allow_pending, release, schemas=None, globs=None):

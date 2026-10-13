@@ -1,0 +1,130 @@
+{
+  "schema": "luminumbra.game.engine-inventory.v1",
+  "engine_revision": "4c15419e9ba064c94e2933df73106991d92f1623",
+  "creatures": [
+    {
+      "name": "ashen_corvid",
+      "source": "data/common/creatures/species/ashen_corvid.json",
+      "sha256": "e5325cff63b96a8f5f0cae1aee10737ef95d70bcfa3b5c4df78f6b007a890821",
+      "species_id": 42510
+    },
+    {
+      "name": "dusk_heron",
+      "source": "data/common/creatures/species/dusk_heron.json",
+      "sha256": "10b33b78e63b5f826112f23d6dca0b3e0821dbd7365da00b7ac793fd56806665",
+      "species_id": 50168
+    },
+    {
+      "name": "ember_skink",
+      "source": "data/common/creatures/species/ember_skink.json",
+      "sha256": "6fe82083552b1537da8b7faa75bf42a2a9b912ded911a069152700c7e420a1d4",
+      "species_id": 37791
+    },
+    {
+      "name": "glimmer_finch",
+      "source": "data/common/creatures/species/glimmer_finch.json",
+      "sha256": "10c633e94f582ae3a02e614f0a743ae49f0888a29954de74e3bc62d3b6f6a75a",
+      "species_id": 36405
+    },
+    {
+      "name": "gloomstalker",
+      "source": "data/common/creatures/species/gloomstalker.json",
+      "sha256": "a66048fd353ad048c98f59eeb7dba4a7c3479f7a27e0c9957da20a9978bb4615",
+      "species_id": 55098
+    },
+    {
+      "name": "grovestrider",
+      "source": "data/common/creatures/species/grovestrider.json",
+      "sha256": "6cff465b33c4f88b3f61f380a7b55a3da4b7fb0300334a1703bcf85db8a83a6c",
+      "species_id": 56165
+    },
+    {
+      "name": "lumen_moth",
+      "source": "data/common/creatures/species/lumen_moth.json",
+      "sha256": "07023f664a34480e961b1e8a3a690f0b052a149a98ef1e7989383f3acc449bf0",
+      "species_id": 13275
+    },
+    {
+      "name": "mire_lurker",
+      "source": "data/common/creatures/species/mire_lurker.json",
+      "sha256": "53da60c8fe6442e1c2669e2bc88fdfb6000db12307c5b8cd0579a0f4ee8d0ace",
+      "species_id": 57487
+    },
+    {
+      "name": "ridgeback_stalker",
+      "source": "data/common/creatures/species/ridgeback_stalker.json",
+      "sha256": "ece57d1605eea446a1754a2d5fae0d3f44f5d78ca0f082089b8255bb67170133",
+      "species_id": 19937
+    },
+    {
+      "name": "tide_grazer",
+      "source": "data/common/creatures/species/tide_grazer.json",
+      "sha256": "0a1f34630a74ed8dce3d7d067e3122968cc1ea20ddd71b54d0947488160ab3f3",
+      "species_id": 56752
+    }
+  ],
+  "plants": [
+    {
+      "name": "frostberry",
+      "source": "data/common/foliage/species/frostberry.json",
+      "sha256": "80095b612ee1b0f9d90b68839291ca98c6698b3624a0bfa1a500c56a591d50ac",
+      "species_id": 49656
+    },
+    {
+      "name": "maize",
+      "source": "data/common/foliage/species/maize.json",
+      "sha256": "b2e9dc25f06edef7518f79f062c89df8cdbc671210c302fb9f60e230ed08ade0",
+      "species_id": 17638
+    },
+    {
+      "name": "moonpetal",
+      "source": "data/common/foliage/species/moonpetal.json",
+      "sha256": "eb1d873a2396b5f70619f1b89f273b699813f2c7d2ba724a6b169e1738bc196f",
+      "species_id": 5125
+    },
+    {
+      "name": "oak",
+      "source": "data/common/foliage/species/oak.json",
+      "sha256": "308bfb604bdfb653fcc57be8191ee1e4d2336a28dc87c023b20b5a0fda59125d",
+      "species_id": 56013
+    },
+    {
+      "name": "sungourd",
+      "source": "data/common/foliage/species/sungourd.json",
+      "sha256": "9f35db584231a12bf6e33b46cfef93476ee23e45fb75a1cb62b11c085a4b661b",
+      "species_id": 9885
+    },
+    {
+      "name": "wheat",
+      "source": "data/common/foliage/species/wheat.json",
+      "sha256": "66ab38676f4e436daa37425354915a28a7928228630586dd95168eb7d5ad5e92",
+      "species_id": 7403
+    }
+  ],
+  "biomes": {
+    "source": "data/common/biomes.json",
+    "sha256": "3e679f3c95fa2e164c8c74769099c8bf8908640c0861943ee1e83733501780a3",
+    "entries": [
+      {
+        "name": "alpine",
+        "id": 0
+      },
+      {
+        "name": "desert",
+        "id": 1
+      },
+      {
+        "name": "plains",
+        "id": 4
+      },
+      {
+        "name": "tundra",
+        "id": 3
+      },
+      {
+        "name": "wetland",
+        "id": 2
+      }
+    ]
+  }
+}

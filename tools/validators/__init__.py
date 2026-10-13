@@ -17,7 +17,9 @@ GLOBS: dict[str, callable]
     a "schema" key.
 
 Every path argument is the posix path relative to ROOT. ctx is a Context with
-the absolute root, allow_pending and release. Problems are strings of the form
+the absolute root, allow_pending and release. For schema validators, ctx.raw
+holds the same captured bytes used to parse obj (None for direct callers).
+Problems are strings of the form
 "PATH: reason". A validator that raises is reported by the caller as a problem.
 
 Schema ids and glob patterns must be unique across all modules. discover()
@@ -38,6 +40,7 @@ class Context:
     root: str
     allow_pending: bool
     release: bool
+    raw: bytes = None
 
 
 def _table(module, attr):

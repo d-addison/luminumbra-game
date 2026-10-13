@@ -1,0 +1,7 @@
+{
+  "schema": "luminumbra.game.items.v1",
+  "items": [
+    {"id": "costarring", "despawn_after": 0, "payload": 0},
+    {"id": "liquid", "despawn_after": 0, "payload": 0}
+  ]
+}
