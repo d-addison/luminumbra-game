@@ -1,0 +1,6 @@
+{
+  "schema": "luminumbra.game.items.v1",
+  "items": [
+    {"id": "farming-seed", "despawn_after": 9e2, "payload": 0}
+  ]
+}

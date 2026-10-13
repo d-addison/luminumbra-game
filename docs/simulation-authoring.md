@@ -7,6 +7,10 @@ native evidence in this slice. Source integration requires a named DS revision;
 packaged population, restart, Frozen and promotion/demotion remain
 `NEEDS-NATIVE-RUN`. Fixtures demonstrate authoring contracts only.
 
+H2 now extends the same exporter with a third mapping for the item catalogue.
+See [item authoring](items-authoring.md) for slice 3's schema, identities and Q25
+matrix. The H1-specific gates and history below remain applicable.
+
 The declared stack is game #39 at
 `7a54e52e34dd0c29504907ca7da9c4c45a5a1835`, then this slice. Game #40 (distant
 scenes) is deferred to v0.3.1. This slice uses no #40 file and introduces the
@@ -129,6 +133,7 @@ h1-candidate/
     runtime/
       data/common/sim/distant_policy.json
       data/common/sim/region_population.json
+      data/common/items/items.json
 ```
 
 Only `bundle/runtime/` is a runtime copy root. Inventory, receipt, identity
@@ -162,7 +167,7 @@ exclusive-reservation contract; rollback never recursively deletes the output.
 | Unknown biome or plant/item population species | Reference refusal before publication |
 | Nonempty valid policy fixture copied into shipping path | Empty-policy shipping boundary refusal |
 | Existing output directory/file/symlink | Refusal; existing bytes unchanged |
-| Item names `costarring` and `liquid` (H2) | Both FNV32 1582148253; H2 must refuse the collision; item validation/export is outside H1 |
+| Item names `costarring` and `liquid` (H2) | Both FNV32 1582148253; the H2 validator/export extension refuses this collision |
 
 ## CI coverage and later runtime checks
 

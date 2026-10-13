@@ -31,7 +31,7 @@ class ExportTests(unittest.TestCase):
         self.base = Path(self.tmp.name)
         self.root = self.base / "source"
         self.output = self.base / "output"
-        for source in (inv.INVENTORY_PATH, sim.POLICY_PATH, sim.POPULATION_PATH):
+        for source in (inv.INVENTORY_PATH, *(row[0] for row in exporter.MAPPINGS)):
             path = self.root / source
             path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / source, path)
