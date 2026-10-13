@@ -1,0 +1,289 @@
+{
+  "content": {
+    "packs": [
+      {
+        "id": "base-content",
+        "sha256": "ae1a976f7cfef190338cd63d078c58d0c93fd59f49dce0101724c1884d96cc5f"
+      }
+    ]
+  },
+  "disabled_backend": {
+    "proof_sha256": "70af2fb9534eda76304d060912a06a2759992061c96d878aa149a7c480e38022",
+    "settings_preserved": true
+  },
+  "engine": {
+    "rev": "b56cdba12e425ed2786778d5b02c98ba61466584"
+  },
+  "forest": {
+    "agree": true,
+    "report_sha256": "584f4a5af6b4839ca05f1b803e312d5cd86db51ead2cd6c70fbb7ce430e71dbd",
+    "submission_sha256": "3bfecff96c82df7bb6c598b3d8e201dc3ee791066525098d05c4b43d097315a1"
+  },
+  "game": {
+    "rev": "9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d"
+  },
+  "historical": [
+    {
+      "closure_sha256": null,
+      "disposition": "kept as a historical record; never counted as a session exit",
+      "id": "application-hang-66604",
+      "kind": "application-hang",
+      "recurrence_status": "not-observed"
+    }
+  ],
+  "launcher": {
+    "identity_sha256": "9bb6d7ed8523be6f7fa30a19bcb2fa8a7357f51482326c03ab6b0d397ea174e7",
+    "preview_audio_off": true
+  },
+  "limitations": [
+    {
+      "blocks_release": true,
+      "closure_sha256": null,
+      "id": "finite-residency",
+      "status": "open"
+    },
+    {
+      "blocks_release": true,
+      "closure_sha256": "1120caa7a4a8345da2da3e5dcb072b5ecdcb4170d63ad13fcffb682b4bed4fdf",
+      "id": "distant-cave-edit-omitted",
+      "status": "closed"
+    }
+  ],
+  "package": {
+    "archive_sha256": "2224563ccea3d3d122ba9b4c2573c80b08c53d26a8a2a1a809bf224d655d6c5e",
+    "git_sha": "3f9d2c1a8b7e6d5c4b3a2f1e0d9c8b7a6f5e4d3c"
+  },
+  "policy": {
+    "refusal_exit_codes": [
+      2,
+      3
+    ]
+  },
+  "save_flow": {
+    "create_session": "create-world",
+    "edit_session": "edit-world",
+    "load_session": "load-world",
+    "loaded_sha256": [
+      "2b57d855e22d2571dd5c4011d3449b64f11a0d2403631bed0d8066bdb8873f62",
+      "70d5a16b9f3360869e92100e4768a738f0602da0a1b4b61c38732a8db86d4f21"
+    ],
+    "restart_session": "restart-world",
+    "save_name": "edit-save",
+    "save_session": "save-world"
+  },
+  "saves": [
+    {
+      "files": [
+        {
+          "path": "world/manifest.txt",
+          "sha256_after": "2b57d855e22d2571dd5c4011d3449b64f11a0d2403631bed0d8066bdb8873f62",
+          "sha256_before": "90e9b4283bffd93ba23991c51f0d9e1d9901a1983f34515d063961a732a19daf"
+        },
+        {
+          "path": "world/settings.txt",
+          "sha256_after": "70d5a16b9f3360869e92100e4768a738f0602da0a1b4b61c38732a8db86d4f21",
+          "sha256_before": "70d5a16b9f3360869e92100e4768a738f0602da0a1b4b61c38732a8db86d4f21"
+        }
+      ],
+      "name": "edit-save"
+    },
+    {
+      "files": [
+        {
+          "path": "world/manifest.txt",
+          "sha256_after": "2b57d855e22d2571dd5c4011d3449b64f11a0d2403631bed0d8066bdb8873f62",
+          "sha256_before": "2b57d855e22d2571dd5c4011d3449b64f11a0d2403631bed0d8066bdb8873f62"
+        }
+      ],
+      "name": "save-refusal"
+    },
+    {
+      "files": [
+        {
+          "path": "world/manifest.txt",
+          "sha256_after": "2b57d855e22d2571dd5c4011d3449b64f11a0d2403631bed0d8066bdb8873f62",
+          "sha256_before": "2b57d855e22d2571dd5c4011d3449b64f11a0d2403631bed0d8066bdb8873f62"
+        }
+      ],
+      "name": "switch-refusal"
+    }
+  ],
+  "scenes": [
+    {
+      "capture_sha256": "ab622e325d8bdfe33858f0b35c2696ef502608fd370ad6da0589f3c1f23e65f8",
+      "defects": [
+        {
+          "disposition": "fixed",
+          "id": "shadow-seam",
+          "note": "tree-line shadow seam removed"
+        }
+      ],
+      "id": "forest-edge",
+      "settled": true
+    },
+    {
+      "capture_sha256": "275beea1388852e3ab90bbc78b26b91046df134be083ab0b8670ec58fa08168f",
+      "defects": [
+        {
+          "disposition": "accepted",
+          "id": "lod-pop",
+          "note": "distant pop accepted at this range"
+        }
+      ],
+      "id": "cave-mouth",
+      "settled": true
+    },
+    {
+      "capture_sha256": "c5ad7f0f0c737c259b8398b1aaf96536e0204a2b072fa60331b862d6f9ed2a9d",
+      "defects": [],
+      "id": "ridge-camp",
+      "settled": true
+    },
+    {
+      "capture_sha256": "910687cbcb8f4431b953516e3924191b40041092e74d87c68aa6cbab8166e7bc",
+      "defects": [],
+      "id": "river-ford",
+      "settled": true
+    },
+    {
+      "capture_sha256": "d08a6f9b32eb2745a6dc7cc780149c9bded0cc958bb4e3ba4a79db47160b04be",
+      "defects": [],
+      "id": "cliff-overlook",
+      "settled": true
+    },
+    {
+      "capture_sha256": "11c76ae0b6799f77f53704df72f846c0a7d1f6ead3aa15b0969f6d20305b8925",
+      "defects": [],
+      "id": "dusk-meadow",
+      "settled": true
+    }
+  ],
+  "schema": "luminumbra.game.acceptance-evidence.v2",
+  "sessions": [
+    {
+      "audio_mode": "null",
+      "command_sha256": "f504b06f724a5db9ac3918a27fca781db7fdb0bba8733e2f4dd748277f02c565",
+      "exit_code": 0,
+      "id": "create-world",
+      "journal_sha256": "45677ed6103f9407e7da68fdfaad6d9bc376ae8eabc969ade7f2c50e233f7788",
+      "kind": "create",
+      "no_audio_flag": false,
+      "saved_master": 75
+    },
+    {
+      "audio_mode": "null",
+      "command_sha256": "afd0ea5f3520b9320bbd2581e8da43b6cd7d1989359e657c1b37354923796560",
+      "exit_code": 0,
+      "id": "edit-world",
+      "journal_sha256": "2e5b520b83af9b7e0d98f73f017279f70f46cc400746381d10db3c1b1f8eca17",
+      "kind": "edit",
+      "no_audio_flag": false,
+      "saved_master": 75
+    },
+    {
+      "audio_mode": "null",
+      "command_sha256": "e2456b41580a6963da0ac54191e7e7eb7102adbd41602b0ae1fce5ac4155cf17",
+      "exit_code": 0,
+      "id": "save-world",
+      "journal_sha256": "25e585b2ebd07094384bc33984c9c2cdaa3148dd77540fded1d8200b1d5f3a84",
+      "kind": "save",
+      "no_audio_flag": false,
+      "saved_master": 75
+    },
+    {
+      "audio_mode": "null",
+      "command_sha256": "230eeb2634fbce30ad9e61138d32f37eea3ffd6b045d3dc49b185325ddb6dbe9",
+      "exit_code": 0,
+      "id": "restart-world",
+      "journal_sha256": "6356b3cf98be38273fb20f8441a1676c98277a8f86c44a85548ae24b2ec0fbea",
+      "kind": "restart",
+      "no_audio_flag": false,
+      "saved_master": 75
+    },
+    {
+      "audio_mode": "null",
+      "command_sha256": "b4a87ce6d626375d18aaac0c6720dffbef5467cf13a81c1f0360d00f5a1893c7",
+      "exit_code": 0,
+      "id": "load-world",
+      "journal_sha256": "c239ad99ee16a7e3ab887e1a78c5159fc1bd9fbaef3784e3e540bcc265863a1d",
+      "kind": "load",
+      "no_audio_flag": false,
+      "saved_master": 75
+    },
+    {
+      "audio_mode": "null",
+      "command_sha256": "e144be9ef4bdc911b91322c52f7386a1cf2ab4e4fc96e793b5e14167617d0ef9",
+      "exit_code": 0,
+      "id": "switch-world-a",
+      "journal_sha256": "404e90e768e5846d294e3969fed1249a2f247ed232614dfce14b5ae00c72570e",
+      "kind": "switch",
+      "no_audio_flag": false,
+      "saved_master": 75
+    },
+    {
+      "audio_mode": "null",
+      "command_sha256": "db4d60bbc0fd62a89dfc6f76b53aa16a070fa69c49e5a649520fd9559606377b",
+      "exit_code": 0,
+      "id": "switch-world-b",
+      "journal_sha256": "56918aa9afa7c8997d5aeb9b960e10880c3fbdd1798469483f04b54db58150e7",
+      "kind": "switch",
+      "no_audio_flag": false,
+      "saved_master": 75
+    },
+    {
+      "audio_mode": "null",
+      "command_sha256": "25b3545f8f09a0ba7633135b29d6b98519f84159b21de2f685ea4dfcfddd7ce7",
+      "exit_code": 2,
+      "id": "refusal-bad-save",
+      "journal_sha256": "dcf7a273506a9d094beeee22a7ce51cd5bba2dc231dadc0a7901bd83fe7afd82",
+      "kind": "refusal",
+      "no_audio_flag": false,
+      "refusal_code": "save-corrupt",
+      "saved_master": 75,
+      "saves": [
+        "save-refusal"
+      ],
+      "saves_unchanged": true
+    },
+    {
+      "audio_mode": "null",
+      "command_sha256": "96b7a5fc6cbcfb1dc83da59d05d4819b6de4296cbfa55c136fbd8f3ccce4032a",
+      "exit_code": 3,
+      "id": "refusal-bad-switch",
+      "journal_sha256": "00d60d59c7b3d3923d2f2746ff7cae29b11262403a03d0c5f8ca15f44017567a",
+      "kind": "refusal",
+      "no_audio_flag": false,
+      "refusal_code": "switch-target-missing",
+      "saved_master": 75,
+      "saves": [
+        "switch-refusal"
+      ],
+      "saves_unchanged": true
+    },
+    {
+      "audio_mode": "off",
+      "command_sha256": "41ba85f298184b5d2a433808773fa13fb1d1a20e63407407180c8caaee181e4f",
+      "exit_code": 0,
+      "id": "preview-launch",
+      "journal_sha256": "cb66f68f5b8fd6c525f0ebc03afac6a1a0cc967dd12235aa5fcfeafe61019a56",
+      "kind": "preview",
+      "no_audio_flag": true,
+      "saved_master": 75
+    },
+    {
+      "audio_mode": "off",
+      "command_sha256": "a42f0db7d1594672b8560f5293e4a68cc8155603a00d60205ffa251aa68a5b5a",
+      "exit_code": 0,
+      "id": "restart-no-audio",
+      "journal_sha256": "1bc82d05c12e2a29bb331d774bf25a3877da53a61bef2d766ea291d50df80bb9",
+      "kind": "restart",
+      "no_audio_flag": true,
+      "saved_master": 75
+    }
+  ],
+  "startup_checks": {
+    "no_audio_precedence_session": "restart-no-audio",
+    "null_audio_nonzero_master_session": "restart-world"
+  },
+  "unresolved_diagnostics": []
+}
