@@ -1,0 +1,14 @@
+{
+  "schema": "luminumbra.game.region-population.v1",
+  "rules": [
+    {
+      "id": "grovestrider-herd",
+      "species": "grovestrider",
+      "biomes": [
+        "unknown"
+      ],
+      "count": 2,
+      "max_attempts": 8
+    }
+  ]
+}

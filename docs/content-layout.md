@@ -28,6 +28,11 @@ registered glob pattern claims it. Schema ids follow the convention
 incompatible shape gets a new suffix; the old id stays registered until its
 files are migrated.
 
+H1 simulation authoring uses the accepted engine policy identifier
+`luminumbra.distant_policy.v1` and the new population identifier
+`luminumbra.game.region-population.v1`. See [simulation authoring](simulation-authoring.md)
+for its separate inventory pin, exact schemas, export transaction and runtime gates.
+
 ## Validator registry
 
 `tools/validators/` is a package. Each module in it is discovered with
@@ -39,7 +44,9 @@ files are migrated.
   separators) to `fn(path, text, ctx) -> list[str]`. Used for files that cannot
   carry a `schema` key, such as engine-format presets and `.traversal` files.
 
-`ctx` is a `Context(root, allow_pending, release)`. Problems are strings of the
+`ctx` is a `Context(root, allow_pending, release)` with an optional `raw` field.
+Schema validators receive the same captured bytes used to parse the document.
+Problems are strings of the
 form `PATH: reason`. Duplicate schema ids or glob patterns across modules are an
 error, reported by `discover()`. A validator that raises is reported as a
 problem and does not stop the run.
@@ -51,7 +58,8 @@ change.
 
 `tools/validate_content.py --root DIR` walks `content/`:
 
-- Every `.json` file is parsed with `lumlib.schema.load_json_file`. Parse errors
+- Every file is captured once with a bounded regular-file read (at most 1 MiB).
+  Every `.json` file is parsed with `lumlib.schema.load_json_bytes`. Parse errors
   and duplicate keys are problems.
 - A JSON file matched by a glob pattern is handed to that glob validator and does
   not need a `schema` key.
@@ -128,9 +136,17 @@ Local checks in this repository are limited to a syntax check that parses a
 file's AST without executing it. Builds, game runs and test runs are not part of
 the local policy for this workstream; CI runs the tests.
 
+The H1 slice explicitly authorizes Python stdlib unittest with a clone-local
+TMPDIR, deleted afterwards. That task-specific exception permits author checks
+without authorizing engine builds, native/Blender/GPU work or network access.
+
 ## Engine baseline
 
 The engine baseline pin for this content is
 `b56cdba12e425ed2786778d5b02c98ba61466584`. Content generated for a different
 engine revision is not valid under this layout until it is re-validated against
 the pin.
+
+H1 species and biome content instead use the separately reviewed S5/S6 inventory
+pin `4c15419e9ba064c94e2933df73106991d92f1623` in
+`tools/lumlib/engine_inventory.json`; it does not repin existing terrain/workloads.
