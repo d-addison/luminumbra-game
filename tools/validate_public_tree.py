@@ -15,7 +15,6 @@ untracked non-ignored files; without git, every file under ROOT except .git):
 Exit codes: 0 clean, 1 problems found, 2 usage error.
 """
 
-import argparse
 import json
 import os
 import re
@@ -27,6 +26,7 @@ if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 
 from lumlib import schema  # noqa: E402
+from lumlib.diagnostics import SingleLineParser, printable  # noqa: E402
 
 MAX_BYTES = 1048576
 
@@ -200,7 +200,7 @@ def _check_strict(rel, ext, data):
             problems.append(f"{rel}: json nesting is too deep")
             return problems
         except Exception as exc:
-            problems.append(f"{rel}: invalid JSON in strict zone: {exc}")
+            problems.append(printable(f"{rel}: invalid JSON in strict zone: {exc}"))
             return problems
         if rel.startswith(EVIDENCE_PREFIX):
             if not isinstance(obj, dict):
@@ -326,7 +326,7 @@ def scan(root, worktree=False, list_from=None):
 
 
 def _build_parser():
-    parser = argparse.ArgumentParser(
+    parser = SingleLineParser(
         prog="validate_public_tree.py",
         description=(
             "Public tree guard. A tripwire, not a proof of absence: it refuses the file "
@@ -358,18 +358,18 @@ def main(argv=None):
 
     root = os.path.abspath(args.root)
     if not os.path.isdir(root):
-        print(f"{args.root}: not a directory", file=sys.stderr)
+        print(printable(f"{args.root}: not a directory"), file=sys.stderr)
         return 2
 
     try:
         problems, count = scan(root, worktree=args.worktree, list_from=args.list_from)
     except OSError as exc:
-        print(f"{args.list_from}: {exc.strerror}", file=sys.stderr)
+        print(printable(f"{args.list_from}: {exc.strerror}"), file=sys.stderr)
         return 2
 
     if problems:
         for line in problems:
-            print(line)
+            print(printable(line))
         return 1
     print(f"public tree ok ({count} files)")
     return 0
