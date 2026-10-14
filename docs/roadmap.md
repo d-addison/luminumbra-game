@@ -8,14 +8,14 @@ There are no assigned due dates or invented completion percentages.
 
 - **Integration baseline:** engine `devel` at `945ecd295835a838eed0169ff709e7aabc134fa1`
   and game `main` at `552a26684215542b327a842104864dda14e31652` (verified September 13).
-- **Merged implementation:** [runtime repairs](https://github.com/d-addison/luminumbra/pull/56),
+- **Merged implementation:** runtime repairs,
   accepted distance contract, hang instrumentation, reversed-Z depth, persisted clock,
   five-tier declaration, render measurements and simulation telemetry. The original
-  Blender stack was superseded by the merged [Blender authoring package](https://github.com/d-addison/luminumbra/pull/155).
+  Blender stack was superseded by the merged Blender authoring package.
   These implementations still have the acceptance obligations listed below.
 - **Recovery in progress:** UCRT SBOM repository-path failure, ambient SIMD determinism
   [#163](https://github.com/d-addison/luminumbra/issues/163), and the conflicted
-  [active-region implementation](https://github.com/d-addison/luminumbra/pull/161). The latest
+  active-region implementation. The latest
   promotion UCRT job passed 2,245 of 2,250 cases at its recorded merge revision;
   its surface-loading guard and three render-process timeouts remain unresolved.
   Historical results do not qualify a new candidate; discover its tests again.
@@ -37,13 +37,13 @@ There are no assigned due dates or invented completion percentages.
   [#127](https://github.com/d-addison/luminumbra/issues/127); the server-load
   incident [#69](https://github.com/d-addison/luminumbra/issues/69) is separate.
 - **Publication:** v0.3.0 remains unpublished and the
-  [promotion gate](https://github.com/d-addison/luminumbra/pull/55) is blocked. Strict promotion
+  promotion gate is blocked. Strict promotion
   requires all 15 contexts after expanded acceptance, followed by signed source-only
   publication, independent artifact verification and a newly named private preview.
   Audio stays off; the delivered `5daeb03` preview stays unchanged.
 - **Authoring ownership:** generic packages remain in the engine monorepo.
-  The [Blender identity review/undo package](https://github.com/d-addison/luminumbra/pull/162)
-  and [optional compiled-prefab consumption](https://github.com/d-addison/luminumbra/pull/165)
+  The Blender identity review/undo package
+  and optional compiled-prefab consumption
   retain separate implementation branches. Their branch evidence must be refreshed
   and reviewed before landing. Headless consumption is not graphical qualification.
   Full installed SDK delivery and game extraction retain the post-release

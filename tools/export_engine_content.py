@@ -55,8 +55,19 @@ class ExportError(Exception):
     """A source, destination or I/O problem; the message is one 'PATH: reason' line."""
 
 
+def _escape_controls(value):
+    """Escape diagnostic controls, preserving printable text and backslashes."""
+    escapes = {"\n": r"\n", "\r": r"\r", "\t": r"\t",
+               "\u2028": r"\u2028", "\u2029": r"\u2029"}
+    return "".join(
+        escapes.get(char, "\\x%02x" % ord(char))
+        if char in escapes or ord(char) < 0x20 or 0x7f <= ord(char) <= 0x9f else char
+        for char in str(value)
+    )
+
+
 def _error_message(exc):
-    """Keep OSError filenames readable without repr-escaping path separators."""
+    """Escape diagnostic controls without repr-escaping path separators."""
     def part(name):
         try:
             value = getattr(exc, name)
@@ -64,7 +75,7 @@ def _error_message(exc):
                 return ""
             if isinstance(value, os.PathLike):
                 value = os.fspath(value)
-            return os.fsdecode(value) if isinstance(value, bytes) else str(value)
+            return _escape_controls(os.fsdecode(value) if isinstance(value, bytes) else str(value))
         except Exception:
             # One malformed field must not hide the other usable details.
             return ""
@@ -83,7 +94,7 @@ def _error_message(exc):
         if message:
             return message
     try:
-        return str(exc)
+        return _escape_controls(str(exc))
     except Exception:
         return "I/O error"
 
@@ -111,12 +122,12 @@ def collect_sources(root):
             continue
         rel = source_dir + "/" + name
         if os.path.islink(_abs(root, rel)):
-            raise ExportError("%s: symlink refused" % rel)
+            raise ExportError("%s: symlink refused" % _escape_controls(rel))
         stem = name[: -len(_JSON_SUFFIX)]
         if not _NAME_RE.fullmatch(stem):
-            raise ExportError("%s: file name must match [a-z0-9_-]+" % rel)
+            raise ExportError("%s: file name must match [a-z0-9_-]+" % _escape_controls(rel))
         if scene.is_reserved_stem(stem):
-            raise ExportError("%s: file name must not be a reserved Windows device name" % rel)
+            raise ExportError("%s: file name must not be a reserved Windows device name" % _escape_controls(rel))
         pairs.append((rel, mapped_template.format(name=stem)))
     return pairs
 
@@ -125,7 +136,7 @@ def _read_bytes(rel, full):
     try:
         return scene.safe_file_bytes(full, rel)
     except scene.SceneError as exc:
-        raise ExportError(str(exc)) from None
+        raise ExportError(_escape_controls(str(exc))) from None
 
 
 def _sidecar_of(source):
@@ -140,12 +151,12 @@ def load_files(root, pairs):
         data = _read_bytes(source, _abs(root, source))
         sidecar = _sidecar_of(source)
         if not os.path.lexists(_abs(root, sidecar)):
-            raise ExportError("%s: missing identity sidecar %s" % (source, sidecar))
+            raise ExportError("%s: missing identity sidecar %s" % (_escape_controls(source), _escape_controls(sidecar)))
         sidecar_data = _read_bytes(sidecar, _abs(root, sidecar))
         problems.extend(scene.check_preset_snapshots(source, data, sidecar_data))
         files.append((mapped, hashlib.sha256(data).hexdigest(), data))
     if problems:
-        raise ExportError("\n".join(problems))
+        raise ExportError("\n".join(_escape_controls(problem) for problem in problems))
     return sorted(files, key=lambda item: item[0])
 
 
@@ -181,9 +192,9 @@ class Destination(str):
 def _restrictions(out, root):
     resolved = os.path.realpath(os.path.abspath(out))
     if _has_git_component(resolved):
-        raise ExportError("%s: refuses to write inside a path with a .git component" % out)
+        raise ExportError("%s: refuses to write inside a path with a .git component" % _escape_controls(out))
     if _is_within(resolved, os.path.realpath(_abs(root, "content"))):
-        raise ExportError("%s: refuses to write inside the content tree" % out)
+        raise ExportError("%s: refuses to write inside the content tree" % _escape_controls(out))
     return resolved
 
 
@@ -191,7 +202,7 @@ def _directory_info(path):
     try:
         return scene.safe_path_chain(path, path, directory=True)
     except scene.SceneError as exc:
-        raise ExportError(str(exc)) from None
+        raise ExportError(_escape_controls(str(exc))) from None
 
 
 def check_destination(out, root):
@@ -200,9 +211,9 @@ def check_destination(out, root):
     existed = os.path.lexists(resolved)
     if existed:
         if not os.path.isdir(resolved):
-            raise ExportError("%s: not a directory" % out)
+            raise ExportError("%s: not a directory" % _escape_controls(out))
         if os.listdir(resolved):
-            raise ExportError("%s: output directory is not empty" % out)
+            raise ExportError("%s: output directory is not empty" % _escape_controls(out))
     existing = resolved
     while not os.path.lexists(existing):
         existing = os.path.dirname(existing)
@@ -228,7 +239,7 @@ class _OwnedPaths:
         for path, info in {**self.anchors, **self.directories}.items():
             observed = os.lstat(path)
             if scene._unsafe_info(observed) or scene.path_identity(observed) != scene.path_identity(info):
-                raise ExportError("%s: destination or ancestor changed" % path)
+                raise ExportError("%s: destination or ancestor changed" % _escape_controls(path))
 
     def mkdir(self, path):
         self.guard()
@@ -236,7 +247,7 @@ class _OwnedPaths:
             os.mkdir(path)  # exclusive even if a writer just created an empty directory
         except OSError:
             if os.path.lexists(path):
-                raise FileExistsError(errno.EEXIST, "output path already exists: %s" % path) from None
+                raise FileExistsError(errno.EEXIST, "output path already exists: %s" % _escape_controls(path)) from None
             raise
         self.record_directory(path)
         self.guard()
@@ -262,7 +273,7 @@ class _OwnedPaths:
             # Windows may report access denied for an occupied directory or
             # reparse leaf. It is still an exclusive-create collision, never ours.
             if os.path.lexists(path):
-                raise FileExistsError(errno.EEXIST, "output path already exists: %s" % path) from None
+                raise FileExistsError(errno.EEXIST, "output path already exists: %s" % _escape_controls(path)) from None
             raise
         self.unverified_files.add(path)
         opened = before_close = None
@@ -297,30 +308,30 @@ class _OwnedPaths:
         try:
             self.guard()
             if opened is None or before_close is None:
-                raise ExportError("%s: output ownership could not be verified" % path)
+                raise ExportError("%s: output ownership could not be verified" % _escape_controls(path))
             closed = os.lstat(path)
             if (scene.path_identity(closed) != scene.path_identity(opened)
                     or scene.path_identity(closed) != scene.path_identity(before_close)
                     or closed.st_size != before_close.st_size
                     or scene._unsafe_info(closed)):
-                raise ExportError("%s: output file changed" % path)
+                raise ExportError("%s: output file changed" % _escape_controls(path))
             if not _CLOSE_TIME_FINALIZATION and scene.file_version(closed) != scene.file_version(before_close):
-                raise ExportError("%s: output file changed" % path)
+                raise ExportError("%s: output file changed" % _escape_controls(path))
             # Allow close-time timestamp finalization on Windows. Full writes must
             # verify all bytes even if flush/close failed. Only an actual write failure
             # permits prefix verification for rollback of a partially written file.
             expected_size = count if partial_write else len(data)
             if (closed.st_size > len(data) or
                     (expected_size is not None and closed.st_size != expected_size)):
-                raise ExportError("%s: output file changed" % path)
+                raise ExportError("%s: output file changed" % _escape_controls(path))
             expected = data[:closed.st_size] if partial_write else data
             digest = hashlib.sha256()
             scene.stream_safe_file(path, path, digest.update)
             if digest.hexdigest() != hashlib.sha256(expected).hexdigest():
-                raise ExportError("%s: output file changed" % path)
+                raise ExportError("%s: output file changed" % _escape_controls(path))
             after = os.lstat(path)
             if scene.file_version(after) != scene.file_version(closed):
-                raise ExportError("%s: output file changed" % path)
+                raise ExportError("%s: output file changed" % _escape_controls(path))
             # Metadata alone cannot detect an equal-length overwrite with restored
             # timestamps. Retain the exact content verified for rollback/publication.
             self.files[path] = (closed, closed.st_size, digest.hexdigest())
@@ -330,12 +341,13 @@ class _OwnedPaths:
                 "%s; ownership verification failed: %s" % (_error_message(error), _error_message(exc)))
         if error is not None:
             if isinstance(error, scene.SceneError):
-                raise ExportError(str(error)) from None
+                raise ExportError(_escape_controls(str(error))) from None
             raise error
 
     def cleanup(self):
-        retained = ["%s (created path identity could not be established)" % path for path in self.uncertain]
-        retained.extend("%s (created file ownership could not be verified)" % path
+        retained = ["%s (created path identity could not be established)" % _escape_controls(path)
+                    for path in self.uncertain]
+        retained.extend("%s (created file ownership could not be verified)" % _escape_controls(path)
                         for path in sorted(self.unverified_files))
         # Check ancestry for each leaf, so uncertainty in one subtree does not justify
         # touching another path through that subtree. Directory mtime may change on writes.
@@ -346,7 +358,7 @@ class _OwnedPaths:
                 # and unlink. Complete hostile-race exclusion is not promised.
                 os.unlink(path)
             except (OSError, ExportError) as exc:
-                retained.append("%s (%s)" % (path, _error_message(exc)))
+                retained.append("%s (%s)" % (_escape_controls(path), _error_message(exc)))
         for path, info in reversed(list(self.directories.items())):
             try:
                 self._guard_ancestors(path)
@@ -354,7 +366,7 @@ class _OwnedPaths:
                     raise ExportError("owned directory changed")
                 os.rmdir(path)  # refuses unknown children; never recursively deletes
             except (OSError, ExportError) as exc:
-                retained.append("%s (%s)" % (path, _error_message(exc)))
+                retained.append("%s (%s)" % (_escape_controls(path), _error_message(exc)))
         return retained
 
     def verify_file(self, path, *, capture=False):
@@ -362,7 +374,7 @@ class _OwnedPaths:
         info, size, expected_digest = self.files[path]
         self._guard_ancestors(path)
         if scene.file_version(os.lstat(path)) != scene.file_version(info):
-            raise ExportError("%s: output file changed" % path)
+            raise ExportError("%s: output file changed" % _escape_controls(path))
         digest = hashlib.sha256()
         count = 0
         chunks = [] if capture else None
@@ -377,11 +389,11 @@ class _OwnedPaths:
         try:
             scene.stream_safe_file(path, path, consume, expected_size=size)
         except scene.SceneError as exc:
-            raise ExportError(str(exc)) from None
+            raise ExportError(_escape_controls(str(exc))) from None
         self._guard_ancestors(path)
         if (count != size or digest.hexdigest() != expected_digest
                 or scene.file_version(os.lstat(path)) != scene.file_version(info)):
-            raise ExportError("%s: output file changed" % path)
+            raise ExportError("%s: output file changed" % _escape_controls(path))
         if capture:
             return b"".join(chunks)
 
@@ -391,7 +403,7 @@ class _OwnedPaths:
         while True:
             info = expected.get(current)
             if info is None or scene.path_identity(os.lstat(current)) != scene.path_identity(info):
-                raise ExportError("ancestor ownership uncertain: %s" % current)
+                raise ExportError("ancestor ownership uncertain: %s" % _escape_controls(current))
             parent = os.path.dirname(current)
             if parent == current:
                 break
@@ -404,23 +416,23 @@ def _walk_error(exc):
 
 def _publication_guard(destination, owned, *, initial=False):
     if _restrictions(destination.label, destination.root) != str(destination):
-        raise ExportError("%s: resolved destination changed" % destination.label)
+        raise ExportError("%s: resolved destination changed" % _escape_controls(destination.label))
     owned.guard()
     for path in owned.files:
         owned.verify_file(path)
     if initial:
         if destination.existed:
             if os.listdir(destination):
-                raise ExportError("%s: output directory became populated" % destination.label)
+                raise ExportError("%s: output directory became populated" % _escape_controls(destination.label))
         elif os.path.lexists(destination):
-            raise ExportError("%s: originally absent destination appeared" % destination.label)
+            raise ExportError("%s: originally absent destination appeared" % _escape_controls(destination.label))
     # During commit, all observed children must be ours. Unknown data stays untouched.
     if os.path.lexists(destination) and (destination.existed or str(destination) in owned.directories):
         known = set(owned.files) | set(owned.directories)
         for current, dirs, files in os.walk(destination, followlinks=False, onerror=_walk_error):
             for name in dirs + files:
                 if os.path.join(current, name) not in known:
-                    raise ExportError("%s: destination contains external data" % destination.label)
+                    raise ExportError("%s: destination contains external data" % _escape_controls(destination.label))
 
 
 def write_out(files, destination, label):
@@ -449,9 +461,9 @@ def write_out(files, destination, label):
             parts = mapped.split("/")
             if (_has_git_component(mapped) or not parts or any(part in ("", ".", "..") or "\\" in part or ":" in part
                                  or scene.is_reserved_stem(part.split(".")[0]) for part in parts)):
-                raise ExportError("%s: unsafe mapped path" % mapped)
+                raise ExportError("%s: unsafe mapped path" % _escape_controls(mapped))
             if hashlib.sha256(data).hexdigest() != digest:
-                raise ExportError("%s: staged bytes do not match manifest digest" % mapped)
+                raise ExportError("%s: staged bytes do not match manifest digest" % _escape_controls(mapped))
             target = _abs(stage, mapped)
             stage_owned.parents(os.path.dirname(target))
             stage_owned.write(target, data)
@@ -478,23 +490,23 @@ def write_out(files, destination, label):
         _publication_guard(destination, owned)
         committed = True
     except (OSError, ExportError) as exc:
-        error = "%s: cannot write output: %s" % (label, _error_message(exc))
+        error = "%s: cannot write output: %s" % (_escape_controls(label), _error_message(exc))
     # A staging cleanup failure must also refuse success and roll back publication.
     retained = stage_owned.cleanup() if stage_owned is not None else []
     if retained:
-        error = (error or "%s: staging cleanup failed" % label)
+        error = (error or "%s: staging cleanup failed" % _escape_controls(label))
     if error is None and committed:
         try:
             _publication_guard(destination, owned)
         except (OSError, ExportError) as exc:
-            error = "%s: cannot write output: %s" % (label, _error_message(exc))
+            error = "%s: cannot write output: %s" % (_escape_controls(label), _error_message(exc))
     if error is not None or not committed:
         retained.extend(owned.cleanup())
         if retained:
-            error = (error or "%s: cleanup failed" % label) + "; cleanup uncertain; retained paths: " + "; ".join(retained)
+            error = (error or "%s: cleanup failed" % _escape_controls(label)) + "; cleanup uncertain; retained paths: " + "; ".join(retained)
             if stage is not None:
-                error += "; stage: " + stage
-        raise ExportError(error or "%s: publication failed" % label)
+                error += "; stage: " + _escape_controls(stage)
+        raise ExportError(error or "%s: publication failed" % _escape_controls(label))
 
 
 def check_engine(files, engine_root):
@@ -503,7 +515,7 @@ def check_engine(files, engine_root):
     for mapped, _, data in files:
         target = _abs(engine_root, mapped)
         if not os.path.isfile(target):
-            problems.append("%s: missing" % mapped)
+            problems.append("%s: missing" % _escape_controls(mapped))
         else:
             # Preserve the existing engine-copy comparison contract; source capture
             # safety is enforced independently by load_files, before this comparison.
@@ -511,9 +523,9 @@ def check_engine(files, engine_root):
                 with open(target, "rb") as handle:
                     engine_data = handle.read()
             except OSError:
-                raise ExportError("%s: cannot read file" % mapped) from None
+                raise ExportError("%s: cannot read file" % _escape_controls(mapped)) from None
             if engine_data != data:
-                problems.append("%s: differs" % mapped)
+                problems.append("%s: differs" % _escape_controls(mapped))
     return problems
 
 
@@ -537,10 +549,10 @@ def main(argv=None):
 
     root = os.path.abspath(args.root)
     if not os.path.isdir(root):
-        print("%s: not a directory" % args.root, file=sys.stderr)
+        print("%s: not a directory" % _escape_controls(args.root), file=sys.stderr)
         return 2
     if args.check is not None and not os.path.exists(os.path.abspath(args.check)):
-        print("%s: not a directory" % args.check, file=sys.stderr)
+        print("%s: not a directory" % _escape_controls(args.check), file=sys.stderr)
         return 2
 
     destination = None
@@ -551,7 +563,7 @@ def main(argv=None):
             print(str(exc), file=sys.stderr)
             return 2
         except OSError as exc:
-            print("%s: cannot inspect destination: %s" % (args.out, _error_message(exc)))
+            print("%s: cannot inspect destination: %s" % (_escape_controls(args.out), _error_message(exc)))
             return 1
 
     try:
@@ -566,7 +578,7 @@ def main(argv=None):
     if args.check is not None:
         engine = os.path.abspath(args.check)
         if not os.path.isdir(engine):
-            print("%s: not a directory" % args.check)
+            print("%s: not a directory" % _escape_controls(args.check))
             return 1
         try:
             problems = check_engine(files, engine)
@@ -574,7 +586,7 @@ def main(argv=None):
             print(str(exc))
             return 1
         except OSError as exc:
-            print("%s: cannot compare with engine tree: %s" % (args.check, _error_message(exc)))
+            print("%s: cannot compare with engine tree: %s" % (_escape_controls(args.check), _error_message(exc)))
             return 1
         for line in problems:
             print(line)

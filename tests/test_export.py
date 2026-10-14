@@ -23,6 +23,22 @@ from lumlib import identity  # noqa: E402
 _PRESETS = _REPO / "content" / "presets"
 _MAPPED = "worlds/atlas/presets/cave_dense.json"
 _SIDECAR = "content/presets/cave_dense.identity.json"
+_DIAGNOSTIC_CASES = (
+    ("newline", "source\nname.json", r"source\nname.json"),
+    ("carriage return", "source\rname.json", r"source\rname.json"),
+    ("vertical tab", "source\x0bname.json", r"source\x0bname.json"),
+    ("form feed", "source\x0cname.json", r"source\x0cname.json"),
+    ("file separator", "source\x1cname.json", r"source\x1cname.json"),
+    ("group separator", "source\x1dname.json", r"source\x1dname.json"),
+    ("record separator", "source\x1ename.json", r"source\x1ename.json"),
+    ("Unicode line separator", "source\u2028name.json", r"source\u2028name.json"),
+    ("Unicode paragraph separator", "source\u2029name.json", r"source\u2029name.json"),
+    ("ESC", "source\x1b[31m.json", r"source\x1b[31m.json"),
+    ("DEL", "source\x7fname.json", r"source\x7fname.json"),
+    ("C1", "source\x85name.json", r"source\x85name.json"),
+    ("Windows path", r"C:\Games\x.json", r"C:\Games\x.json"),
+    ("non-ASCII filename", "café 雪.json", "café 雪.json"),
+)
 
 
 def _run(argv):
@@ -452,6 +468,82 @@ class ExportRepairTests(unittest.TestCase):
                       exporter.ExportError(filename + ": output file changed")):
             with self.subTest(error=error):
                 self.assertEqual(exporter._error_message(error), str(error))
+
+    def test_escape_controls_preserves_printable_text_and_covers_all_controls(self):
+        for name, value, expected in _DIAGNOSTIC_CASES:
+            with self.subTest(case=name):
+                self.assertEqual(exporter._escape_controls(value), expected)
+                self.assertEqual(exporter._escape_controls(expected), expected)
+        for code in (*range(0x20), *range(0x7f, 0xa0)):
+            with self.subTest(code=code):
+                expected = {9: r"\t", 10: r"\n", 13: r"\r"}.get(code, r"\x%02x" % code)
+                self.assertEqual(exporter._escape_controls(chr(code)), expected)
+
+    def test_error_message_sanitises_every_field_and_main_runtime_output(self):
+        for name, value, escaped in _DIAGNOSTIC_CASES:
+            errors = (
+                ("strerror", OSError(errno.EIO, value), escaped),
+                ("filename", OSError(errno.EIO, "I/O error", value), "I/O error: " + escaped),
+                ("filename2", OSError(errno.EIO, "I/O error", "source", None, value),
+                 "I/O error: source -> " + escaped),
+                ("all fields", OSError(errno.EIO, value, value, None, value),
+                 escaped + ": " + escaped + " -> " + escaped),
+                ("OSError fallback", OSError(value), escaped),
+                ("exception fallback", ValueError(value), escaped),
+            )
+            for field, error, expected in errors:
+                with self.subTest(case=name, field=field):
+                    self.assertEqual(exporter._error_message(error), expected)
+                    if isinstance(error, OSError):
+                        with mock.patch.object(exporter, "collect_sources", side_effect=error):
+                            code, out, err = _run([])
+                        self.assertEqual(code, 1)
+                        self.assertEqual(out, exporter.scene.PRESET_DIR + ": cannot read content: " + expected + "\n")
+                        self.assertEqual(out.splitlines(), [out[:-1]])
+                        self.assertEqual(err, "")
+
+    def test_main_default_root_stderr_is_one_sanitised_line(self):
+        for name, value, expected in _DIAGNOSTIC_CASES:
+            with self.subTest(case=name):
+                with mock.patch.object(exporter, "REPO_ROOT", value), \
+                     mock.patch.object(exporter.os.path, "isdir", return_value=False):
+                    code, out, err = _run([])
+                self.assertEqual(code, 2)
+                self.assertEqual(out, "")
+                self.assertEqual(err, expected + ": not a directory\n")
+                self.assertEqual(err.splitlines(), [expected + ": not a directory"])
+
+    def test_path_export_errors_and_retained_paths_escape_controls(self):
+        for name, value, expected in _DIAGNOSTIC_CASES:
+            with self.subTest(case=name):
+                with mock.patch.object(exporter, "_directory_info"), \
+                     mock.patch.object(exporter.os.path, "lexists", return_value=True), \
+                     mock.patch.object(exporter.os.path, "islink", return_value=False), \
+                     mock.patch.object(exporter.os, "listdir", return_value=[value]):
+                    with self.assertRaises(exporter.ExportError) as caught:
+                        exporter.collect_sources(str(_REPO))
+                self.assertEqual(str(caught.exception),
+                                 "content/presets/" + expected + ": file name must match [a-z0-9_-]+")
+                with self.assertRaises(exporter.ExportError) as caught:
+                    exporter._restrictions(".git/" + value, str(_REPO))
+                self.assertEqual(str(caught.exception),
+                                 ".git/" + expected + ": refuses to write inside a path with a .git component")
+                owned = exporter._OwnedPaths({})
+                owned.uncertain.append(value)
+                owned.unverified_files.add(value)
+                self.assertEqual(owned.cleanup(), [
+                    expected + " (created path identity could not be established)",
+                    expected + " (created file ownership could not be verified)",
+                ])
+
+    def test_validation_errors_escape_controls_with_existing_line_separators(self):
+        problems = ["source\nname.json: invalid\x1b", "café.json: invalid"]
+        with mock.patch.object(exporter, "_read_bytes", return_value=b"{}"), \
+             mock.patch.object(exporter.os.path, "lexists", return_value=True), \
+             mock.patch.object(exporter.scene, "check_preset_snapshots", return_value=problems):
+            with self.assertRaises(exporter.ExportError) as caught:
+                exporter.load_files(str(_REPO), [("source.json", "target.json")])
+        self.assertEqual(str(caught.exception), "source\\nname.json: invalid\\x1b\ncafé.json: invalid")
 
     def test_unusual_os_errors_format_safely_and_main_returns_one(self):
         filename = r"C:\Games\Content\source.json"
