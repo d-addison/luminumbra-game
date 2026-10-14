@@ -1,0 +1,76 @@
+{
+  "schema": "luminumbra.authoring.meshgen.config.v1",
+  "config_schema_version": 1,
+  "backend": {"id": "mock"},
+  "policy": {
+    "validation_profile": "internal",
+    "licence": {
+      "allowed_status": ["shippable"],
+      "internal_acknowledgements": [],
+      "counsel_notes": [],
+      "dataset_chain_waivers": [],
+      "attestations": {
+        "revenue_under_cap": {"value": false},
+        "no_ai_improvement": {"value": false},
+        "registration_done": {"value": false}
+      }
+    },
+    "bounds": {
+      "budgets.max_tris_final": {"min": 64, "max": 200000},
+      "timeouts.job_s": {"min": 10, "max": 1800}
+    },
+    "locks": ["policy.licence", "naming.collection_template", "backends.*.endpoint", "agent.tier_b.enabled", "finish.normals.repair_zero"]
+  },
+  "backends": {
+    "mock": {
+      "kind": "mock",
+      "enabled": true,
+      "endpoint": "http://127.0.0.1:18800",
+      "token_source": {"env": "LUMINUMBRA_GEN_TOKEN"},
+      "pins": {},
+      "timeouts": {"job_s": 60}
+    },
+    "direct3d_s2": {
+      "kind": "model",
+      "enabled": false,
+      "endpoint": "http://127.0.0.1:18801",
+      "token_source": {"file": "authoring/meshgen/token.d3ds"},
+      "pins": {}
+    }
+  },
+  "profiles": {
+    "default": {
+      "backend": {"id": "mock"},
+      "budgets": {"max_tris_final": 8000, "max_tris_prefinish": 4000000, "bounds_m": [8.0, 8.0, 8.0]}
+    },
+    "rock": {
+      "inherits": "default",
+      "budgets": {"max_tris_final": 6000},
+      "finish": {"loose": {"policy": "keep"}}
+    },
+    "prop": {"inherits": "default", "budgets": {"max_tris_final": 8000}},
+    "foliage": {
+      "inherits": "default",
+      "budgets": {"max_tris_final": 4000},
+      "finish": {
+        "loose": {"policy": "keep"},
+        "decimate": {"thin_shell_guard": true, "hausdorff_max_rel": 0.02},
+        "normals": {"mode": "smooth"}
+      }
+    },
+    "tree": {
+      "inherits": "default",
+      "budgets": {"max_tris_final": 20000, "bounds_m": [30.0, 30.0, 40.0]},
+      "finish": {"decimate": {"thin_shell_guard": true}}
+    }
+  },
+  "agent": {"tier_a": {"enabled": false}, "tier_b": {"enabled": false}},
+  "lod": {"enabled": false},
+  "collider": {"enabled": false, "mode": "none"},
+  "texture": {"enabled": false},
+  "rig": {"enabled": false},
+  "anim": {"enabled": false},
+  "candidates": {"count": 1, "select": "manual"},
+  "logging": {"keep_prompts": "digest"},
+  "retention": {"gc": "manual"}
+}

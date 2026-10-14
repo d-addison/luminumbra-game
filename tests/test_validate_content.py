@@ -29,6 +29,14 @@ def _raises(path, obj, ctx):
     raise RuntimeError("boom")
 
 
+def _assert_single_line_error(test, text):
+    error_lines = [line for line in text.splitlines() if "error:" in line]
+    test.assertEqual(len(error_lines), 1, text)
+    test.assertIn("\\n", error_lines[0])
+    test.assertIn("\\x1b", error_lines[0])
+    test.assertFalse(any(ord(ch) < 32 or ord(ch) == 127 for ch in error_lines[0]))
+
+
 class _ContentTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -374,6 +382,13 @@ class MainTest(_ContentTest):
             code = validate_content.main(["--root", str(self.root), "--release", "--allow-pending"])
         self.assertEqual(code, 2)
 
+    def test_unknown_argument_control_characters_are_escaped(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            code = validate_content.main(["--bad\noption\x1bX"])
+        self.assertEqual(code, 2)
+        _assert_single_line_error(self, err.getvalue())
+
     def test_missing_root_is_usage_error(self):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
@@ -403,6 +418,22 @@ class MainTest(_ContentTest):
         self.assertEqual(code, 1)
         self.assertEqual(out.getvalue().splitlines(), ["content: symlink or non-directory is not allowed"])
 
+    def test_parse_error_with_escaped_newline_in_key_prints_one_line(self):
+        # The JSON text carries a backslash-n escape, so the decoded key holds a real newline.
+        self.write("content/presets/dup.json", '{"a\\nb": 1, "a\\nb": 2}\n')
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = validate_content.main(["--root", str(self.root)])
+        self.assertEqual(code, 1)
+        text = out.getvalue()
+        self.assertEqual(text.count("\n"), 1)
+        lines = text.splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith("content/presets/dup.json: "))
+        self.assertIn("duplicate key", lines[0])
+        self.assertIn("\\n", lines[0])
+        self.assertNotIn("\n", lines[0])
+
 
 class SceneContextCompatibilityTest(_ContentTest):
     def test_five_positional_arguments_and_three_field_context_remain_compatible(self):
@@ -417,7 +448,9 @@ class SceneContextCompatibilityTest(_ContentTest):
         self.assertEqual(validate_content.validate_tree(str(self.root), False, True,
                                                        {SCHEMA: capture}, {}), [])
         ctx = Context(str(self.root), False, True)
-        self.assertEqual(seen, [ctx])
+        raw = ('{"schema": "%s"}\n' % SCHEMA).encode("utf-8")
+        self.assertEqual(seen, [Context(str(self.root), False, True, raw)])
+        self.assertIsNone(ctx.raw)
         self.assertIsNone(ctx.expected_engine_revision)
         self.assertIsNone(ctx.expected_game_revision)
         self.assertIsNone(ctx.artifact_root)

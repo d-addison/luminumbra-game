@@ -32,6 +32,8 @@ from decimal import Decimal
 from lumlib import identity, schema
 from lumlib.schema import SchemaError
 
+_WINDOWS_METADATA = os.name == "nt"
+
 PRESET_DIR = "content/presets"
 JSON_SUFFIX = ".json"
 IDENTITY_SUFFIX = ".identity.json"
@@ -384,7 +386,11 @@ def path_identity(info):
 
 
 def file_version(info):
-    return path_identity(info) + (info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    # Windows path stat exposes creation time as ctime, while descriptor stat
+    # can expose change time. Compare the explicit creation time in both cases.
+    created_or_changed = (getattr(info, "st_birthtime_ns", info.st_ctime_ns)
+                          if _WINDOWS_METADATA else info.st_ctime_ns)
+    return path_identity(info) + (info.st_size, info.st_mtime_ns, created_or_changed)
 
 
 def _unsafe_info(info):
@@ -453,6 +459,7 @@ def stream_safe_file(full, where, consume, *, expected_size=None):
                 after_open = os.fstat(handle.fileno())
             after = safe_path_chain(full, where)
             if (count != opened.st_size or file_version(opened) != file_version(after_open)
+                    or opened.st_ctime_ns != after_open.st_ctime_ns
                     or file_version(opened) != file_version(after[full])
                     or any(path_identity(info) != path_identity(after[path])
                            for path, info in before.items())):

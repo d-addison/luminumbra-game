@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest import mock
 import shutil
 import sys
@@ -115,7 +116,8 @@ def _write_full_receipts(root):
 
 
 def _release_ctx(root):
-    return Context(str(root), False, True, _ENGINE, _GAME, str(root / "artifacts"))
+    return Context(str(root), False, True, expected_engine_revision=_ENGINE,
+                   expected_game_revision=_GAME, artifact_root=str(root / "artifacts"))
 
 
 def _release_problems(obj, root):
@@ -1168,6 +1170,7 @@ class SceneReleaseRepairTests(unittest.TestCase):
         for kind in ("truncate", "modify"):
             with self.subTest(kind=kind):
                 leaf.write_bytes(_CAPTURE)
+                before = leaf.stat()
                 digest = hashlib.sha256()
 
                 def consume(chunk):
@@ -1176,9 +1179,57 @@ class SceneReleaseRepairTests(unittest.TestCase):
                         leaf.write_bytes(b"")
                     else:
                         leaf.write_bytes(b"x" * len(_CAPTURE))
+                        # Make the metadata mutation observable even when the
+                        # filesystem gives consecutive writes the same timestamp.
+                        os.utime(leaf, ns=(before.st_atime_ns, before.st_mtime_ns + 1000000000))
 
                 with self.assertRaisesRegex(scene.SceneError, "changed during reading"):
                     scene.stream_safe_file(str(leaf), "capture", consume)
+
+    def test_windows_creation_and_descriptor_change_times_preserve_race_checks(self):
+        leaf = self.root / "artifacts" / "sha256" / _CAPTURE_HASH
+        real_lstat = os.lstat
+        real_fstat = os.fstat
+        for change in (False, True):
+            with self.subTest(change=change):
+                leaf.write_bytes(_CAPTURE)
+                before = leaf.stat()
+                mutated = []
+                chunks = []
+
+                def metadata(info, descriptor=False):
+                    attrs = {name: getattr(info, name) for name in
+                             ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns")}
+                    attrs.update(st_birthtime_ns=before.st_ctime_ns,
+                                 st_ctime_ns=before.st_ctime_ns +
+                                 (100 + len(mutated) if descriptor else 0),
+                                 st_file_attributes=0, st_reparse_tag=0)
+                    return SimpleNamespace(**attrs)
+
+                def path_stat(target, *args, **kwargs):
+                    info = real_lstat(target, *args, **kwargs)
+                    return metadata(info) if Path(target) == leaf else info
+
+                def descriptor_stat(fd):
+                    return metadata(real_fstat(fd), descriptor=True)
+
+                def consume(chunk):
+                    chunks.append(chunk)
+                    if change:
+                        leaf.write_bytes(b"x" * len(_CAPTURE))
+                        os.utime(leaf, ns=(before.st_atime_ns, before.st_mtime_ns))
+                        mutated.append(True)
+
+                with mock.patch.object(scene, "_WINDOWS_METADATA", True), \
+                        mock.patch.object(scene.os, "lstat", side_effect=path_stat), \
+                        mock.patch.object(scene.os, "fstat", side_effect=descriptor_stat):
+                    if change:
+                        with self.assertRaisesRegex(scene.SceneError, "changed during reading"):
+                            scene.stream_safe_file(str(leaf), "capture", consume)
+                    else:
+                        scene.stream_safe_file(str(leaf), "capture", consume)
+                self.assertEqual(b"".join(chunks), _CAPTURE)
+                self.assertEqual(leaf.read_bytes(), b"x" * len(_CAPTURE) if change else _CAPTURE)
 
     def test_post_read_replacement_is_refused_on_all_platforms(self):
         leaf = self.root / "artifacts" / "sha256" / _CAPTURE_HASH

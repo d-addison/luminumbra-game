@@ -1,0 +1,6 @@
+{
+  "schema": "luminumbra.game.items.v1",
+  "items": [
+    {"id": "fxdsatwp", "despawn_after": 0, "payload": 0}
+  ]
+}

@@ -48,6 +48,11 @@ def canonical_bytes(obj) -> bytes:
     return canonical_json(obj).encode("utf-8")
 
 
+def semantic_identity(obj):
+    """Checksum of validated integer-JSON authoring content, not ARL5 compatibility."""
+    return "%016x" % fnv1a64(canonical_bytes(obj))
+
+
 def _reject_duplicate_keys(pairs):
     result = {}
     for key, value in pairs:

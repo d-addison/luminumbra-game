@@ -1,0 +1,10 @@
+{
+  "fnv1a32_vectors": [
+    {"name": "", "type_id": 2166136261},
+    {"name": "a", "type_id": 3826002220},
+    {"name": "farming-seed", "type_id": 516719959},
+    {"name": "costarring", "type_id": 1582148253},
+    {"name": "liquid", "type_id": 1582148253},
+    {"name": "fxdsatwp", "type_id": 0}
+  ]
+}

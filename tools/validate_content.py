@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Validate the content tree under ROOT/content and the JSON files under ROOT/docs/evidence.
 
-Every .json file is parsed with lumlib.schema.load_json_file. A JSON file whose
+Every .json file is captured once and parsed with lumlib.schema.load_json_bytes. A JSON file whose
 path matches a GLOBS pattern is handed to that glob validator and need not carry
 a "schema" key. Any other JSON file, in either zone, must be an object whose
 "schema" key is a registered schema id; an unregistered or future schema id is
@@ -32,12 +32,15 @@ import fnmatch
 import os
 import re
 import sys
+from dataclasses import replace
 
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 
-from lumlib.schema import SchemaError, load_json_file  # noqa: E402
+from lumlib.diagnostics import SingleLineParser, printable  # noqa: E402
+from lumlib.engine_inventory import MAX_DOCUMENT_BYTES, read_captured  # noqa: E402
+from lumlib.schema import SchemaError, load_json_bytes  # noqa: E402
 from validators import Context, RegistryError, discover  # noqa: E402
 
 
@@ -119,12 +122,12 @@ def _call(fn, rel, *args):
     try:
         result = fn(rel, *args)
     except Exception as exc:
-        return [f"{rel}: validator raised {type(exc).__name__}: {exc}"]
+        return [printable(f"{rel}: validator raised {type(exc).__name__}: {exc}")]
     if result is None:
         return []
     if not isinstance(result, list):
         return [f"{rel}: validator returned {type(result).__name__}, expected list"]
-    return [str(item) for item in result]
+    return [printable(item) for item in result]
 
 
 def _check_schema(rel, obj, schemas, ctx):
@@ -137,7 +140,7 @@ def _check_schema(rel, obj, schemas, ctx):
         return [f"{rel}: schema key must be a string"]
     fn = schemas.get(schema_id)
     if fn is None:
-        return [f"{rel}: schema '{schema_id}' is not registered"]
+        return [printable(f"{rel}: schema '{schema_id}' is not registered")]
     return _call(fn, rel, obj, ctx)
 
 
@@ -152,8 +155,9 @@ def _check_entry(root, rel, schemas, globs, ctx):
         return [f"{rel}: unrecognised content file"]
 
     try:
-        with open(full, "rb") as handle:
-            raw = handle.read()
+        raw = read_captured(full)
+    except SchemaError as exc:
+        return [printable(f"{rel}: {exc}")]
     except OSError as exc:
         return [f"{rel}: cannot read file: {exc.strerror}"]
     try:
@@ -165,17 +169,17 @@ def _check_entry(root, rel, schemas, globs, ctx):
         return _call(glob_fn, rel, text, ctx)
 
     try:
-        obj = load_json_file(full)
+        obj = load_json_bytes(raw, full, max_bytes=MAX_DOCUMENT_BYTES)
     except SchemaError as exc:
-        return [f"{rel}: {exc}"]
+        return [printable(f"{rel}: {exc}")]
     except RecursionError:
         return [f"{rel}: json nesting is too deep"]
     except Exception as exc:
-        return [f"{rel}: cannot load JSON: {exc}"]
+        return [printable(f"{rel}: cannot load JSON: {exc}")]
 
     if glob_fn is not None:
         return _call(glob_fn, rel, text, ctx)
-    return _check_schema(rel, obj, schemas, ctx)
+    return _check_schema(rel, obj, schemas, replace(ctx, raw=raw))
 
 
 def validate_tree(root, allow_pending, release, schemas=None, globs=None, *,
@@ -242,7 +246,7 @@ def _artifact_root_arg(value):
 
 
 def _build_parser():
-    parser = argparse.ArgumentParser(
+    parser = SingleLineParser(
         prog="validate_content.py",
         description="Validate the game content tree under ROOT/content and the JSON under ROOT/docs/evidence.",
     )
@@ -273,12 +277,12 @@ def main(argv=None):
 
     root = os.path.abspath(args.root)
     if not os.path.isdir(root):
-        print(f"{args.root}: not a directory", file=sys.stderr)
+        print(printable(f"{args.root}: not a directory"), file=sys.stderr)
         return 2
     refusals = _zone_refusals(root)
     if refusals:
         for line in refusals:
-            print(line)
+            print(printable(line))
         return 1
     if not os.path.isdir(os.path.join(root, *CONTENT_DIR.split("/"))) and not _all_files(root):
         print("no content/ directory")
@@ -287,7 +291,7 @@ def main(argv=None):
     try:
         schemas, globs = discover()
     except RegistryError as exc:
-        print(f"validators: {exc}")
+        print(printable(f"validators: {exc}"))
         return 1
 
     problems = validate_tree(
@@ -302,7 +306,7 @@ def main(argv=None):
     )
     if problems:
         for line in sorted(problems):
-            print(line)
+            print(printable(line))
         return 1
     print("content ok")
     return 0

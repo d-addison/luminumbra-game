@@ -73,7 +73,8 @@ _SYMLINKS = _symlinks_supported()
 class ExportTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self.tmp = Path(self._tmp.name)
+        # Match the exporter's resolved namespace, including Windows short aliases.
+        self.tmp = Path(self._tmp.name).resolve()
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -334,6 +335,34 @@ class ExportTests(unittest.TestCase):
         self._assert_sidecar_refused("[" * 200000 + "]" * 200000, "json nesting is too deep")
 
 
+class _BoundedReader:
+    """Record reads and refuse requests beyond a recorded-size probe budget."""
+
+    def __init__(self, handle, size):
+        self.handle = handle
+        self.remaining = size + 1
+        self.requests = []
+        self.returned_sizes = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.handle.close()
+
+    def fileno(self):
+        return self.handle.fileno()
+
+    def read(self, size):
+        if not 0 < size <= min(1024 * 1024, self.remaining):
+            raise AssertionError("read exceeded recorded size plus probe budget")
+        self.requests.append(size)
+        chunk = self.handle.read(size)
+        self.returned_sizes.append(len(chunk))
+        self.remaining -= len(chunk)
+        return chunk
+
+
 class _GrowingReader:
     """Never returns EOF; fail promptly if the caller exceeds its read budget."""
 
@@ -383,6 +412,12 @@ class ExportRepairTests(unittest.TestCase):
         if existed:
             path.mkdir()
         return path, exporter.check_destination(str(path), str(_REPO))
+
+    def _isolated_destination(self, existed, name):
+        # A retained stage from another subcase is external to this invocation.
+        case = self.tmp / name
+        case.mkdir()
+        return self._destination(existed, os.path.join(name, "out"))
 
     def _assert_clean(self, path, existed, initial_info):
         if existed:
@@ -713,7 +748,7 @@ class ExportRepairTests(unittest.TestCase):
         for phase in ("stage", "publication"):
             for existed in (False, True):
                 with self.subTest(phase=phase, existed=existed, truncate=truncate):
-                    path, destination = self._destination(existed, "boundary-%s-%s-%s" %
+                    path, destination = self._isolated_destination(existed, "boundary-%s-%s-%s" %
                                                          (truncate, phase, existed))
                     before = path.stat() if existed else None
                     injected = []
@@ -836,7 +871,7 @@ class ExportRepairTests(unittest.TestCase):
         for phase in ("stage", "publication"):
             for existed in (False, True):
                 with self.subTest(phase=phase, existed=existed):
-                    path, destination = self._destination(existed, "verified-rollback-%s-%s" % (phase, existed))
+                    path, destination = self._isolated_destination(existed, "verified-rollback-%s-%s" % (phase, existed))
                     before = path.stat() if existed else None
                     writes = []
                     external = []
@@ -868,7 +903,7 @@ class ExportRepairTests(unittest.TestCase):
         original_write = exporter._OwnedPaths.write
         for existed in (False, True):
             with self.subTest(existed=existed):
-                path, destination = self._destination(existed, "verified-stage-%s" % existed)
+                path, destination = self._isolated_destination(existed, "verified-stage-%s" % existed)
                 before = path.stat() if existed else None
                 writes = []
                 external = []
@@ -889,6 +924,129 @@ class ExportRepairTests(unittest.TestCase):
                 self.assertEqual(len(external), 1)
                 self._assert_verified_overwrite_retained(path, existed, before, writes[0], external[0],
                                                         "stage", str(caught.exception))
+
+    def test_stage_overwrite_at_prepublication_guard_is_bounded_and_destination_untouched(self):
+        original_guard = exporter._publication_guard
+        real_fdopen = exporter.scene.os.fdopen
+        for existed in (False, True):
+            with self.subTest(existed=existed):
+                path, destination = self._isolated_destination(existed, "snapshot-overwrite-%s" % existed)
+                before = path.stat() if existed else None
+                changed = []
+                external = []
+                readers = []
+
+                def overwrite_at_guard(destination, owned, *, initial=False):
+                    original_guard(destination, owned, initial=initial)
+                    stages = list(path.parent.glob(".scene-export-*")) if initial else []
+                    if stages and not changed:
+                        changed.append(stages[0] / self._files()[0][0])
+                        external.append(self._overwrite_verified_file(changed[0]))
+
+                def bounded_fdopen(fd, *args, **kwargs):
+                    handle = real_fdopen(fd, *args, **kwargs)
+                    if changed and not readers and exporter.scene.path_identity(os.fstat(fd)) == \
+                            exporter.scene.path_identity(changed[0].stat()):
+                        reader = _BoundedReader(handle, len(self._files()[0][2]))
+                        readers.append(reader)
+                        return reader
+                    return handle
+
+                with mock.patch.object(exporter.scene, "file_version",
+                                       side_effect=self._file_version_with_stable_creation_time), \
+                        mock.patch.object(exporter, "_publication_guard", side_effect=overwrite_at_guard), \
+                        mock.patch.object(exporter.scene.os, "fdopen", side_effect=bounded_fdopen), \
+                        mock.patch.object(exporter.os, "mkdir", wraps=exporter.os.mkdir) as mkdir:
+                    with self.assertRaisesRegex(exporter.ExportError, "staged file changed") as caught:
+                        exporter.write_out(self._files(), destination, str(path))
+                self.assertEqual(len(readers), 1)
+                self.assertEqual(sum(readers[0].returned_sizes), len(self._files()[0][2]))
+                self.assertTrue(readers[0].handle.closed)
+                self.assertFalse(any(str(call.args[0]) == str(path) or
+                                     str(call.args[0]).startswith(str(path) + os.sep)
+                                     for call in mkdir.call_args_list))
+                message = str(caught.exception)
+                self.assertIn("cannot write output: staged file changed: %s: output file changed" % changed[0],
+                              message.split("; cleanup uncertain", 1)[0])
+                self._assert_verified_overwrite_retained(path, existed, before, changed[0], external[0],
+                                                        "stage", message)
+
+    def test_stage_growth_during_snapshot_is_bounded_and_destination_untouched(self):
+        original_guard = exporter._publication_guard
+        real_fdopen = exporter.scene.os.fdopen
+        for existed in (False, True):
+            with self.subTest(existed=existed):
+                path, destination = self._isolated_destination(existed, "snapshot-growth-%s" % existed)
+                before = path.stat() if existed else None
+                selected = []
+                readers = []
+                initial = self._files()[0][2]
+
+                def select_at_guard(destination, owned, *, initial=False):
+                    original_guard(destination, owned, initial=initial)
+                    stages = list(path.parent.glob(".scene-export-*")) if initial else []
+                    if stages and not selected:
+                        selected.append(stages[0] / self._files()[0][0])
+
+                def growing_fdopen(fd, *args, **kwargs):
+                    handle = real_fdopen(fd, *args, **kwargs)
+                    if selected and not readers and exporter.scene.path_identity(os.fstat(fd)) == \
+                            exporter.scene.path_identity(selected[0].stat()):
+                        reader = _GrowingReader(handle, selected[0], initial)
+                        readers.append(reader)
+                        return reader
+                    return handle
+
+                with mock.patch.object(exporter, "_publication_guard", side_effect=select_at_guard), \
+                        mock.patch.object(exporter.scene.os, "fdopen", side_effect=growing_fdopen), \
+                        mock.patch.object(exporter.os, "mkdir", wraps=exporter.os.mkdir) as mkdir:
+                    with self.assertRaisesRegex(exporter.ExportError, "staged file changed") as caught:
+                        exporter.write_out(self._files(), destination, str(path))
+                self.assertEqual(len(readers), 1)
+                self._assert_growth_reader_bounded(readers[0], len(initial))
+                self.assertFalse(any(str(call.args[0]) == str(path) or
+                                     str(call.args[0]).startswith(str(path) + os.sep)
+                                     for call in mkdir.call_args_list))
+                message = str(caught.exception)
+                self.assertIn("cannot write output: staged file changed: %s: " % selected[0],
+                              message.split("; cleanup uncertain", 1)[0])
+                self.assertIn("size increased", message.split("; cleanup uncertain", 1)[0])
+                self._assert_verified_overwrite_retained(path, existed, before, selected[0], readers[0].external,
+                                                        "stage", message)
+
+    def test_publication_uses_single_verified_stage_snapshots(self):
+        path, destination = self._destination()
+        original_verify = exporter._OwnedPaths.verify_file
+        original_cleanup = exporter._OwnedPaths.cleanup
+        original_stream = exporter.scene.stream_safe_file
+        captures = []
+        cleaning = []
+
+        def verify_snapshot(owned, target, *, capture=False):
+            data = original_verify(owned, target, capture=capture)
+            if capture:
+                captures.append((target, data))
+            return data
+
+        def start_cleanup(owned):
+            cleaning.append(owned)
+            return original_cleanup(owned)
+
+        def refuse_stage_publication_read(target, *args, **kwargs):
+            if path.exists() and not cleaning and ".scene-export-" in str(target):
+                raise AssertionError("stage reopened during publication")
+            return original_stream(target, *args, **kwargs)
+
+        with mock.patch.object(exporter._OwnedPaths, "verify_file", new=verify_snapshot), \
+                mock.patch.object(exporter._OwnedPaths, "cleanup", new=start_cleanup), \
+                mock.patch.object(exporter.scene, "stream_safe_file", side_effect=refuse_stage_publication_read):
+            exporter.write_out(self._files(), destination, str(path))
+        self.assertEqual(len(captures), len(self._files()))
+        for (target, snapshot), (mapped, _, data) in zip(captures, self._files()):
+            self.assertTrue(target.endswith(os.path.join(*mapped.split("/"))))
+            self.assertEqual(snapshot, data)
+            self.assertEqual((path / mapped).read_bytes(), snapshot)
+        self.assertEqual(list(path.parent.glob(".scene-export-*")), [])
 
     def test_verified_output_overwrite_before_final_acceptance_is_refused_and_retained(self):
         original_write = exporter._OwnedPaths.write
@@ -1224,6 +1382,31 @@ class ExportRepairTests(unittest.TestCase):
                 exporter.write_out(self._files(), destination, str(path))
         self.assertIn(str(keep[0].parent), str(caught.exception))
         self.assertEqual(keep[0].read_bytes(), b"external directory bytes")
+
+    def test_exclusive_create_access_denied_collision_preserves_external_data(self):
+        real_open = open
+        for kind in ("file", "directory"):
+            with self.subTest(kind=kind):
+                path, destination = self._isolated_destination(False, "denied-" + kind)
+                keep = []
+
+                def occupy(target, mode="r", *args, **kwargs):
+                    if mode == "xb" and str(target).startswith(str(path) + os.sep) and not keep:
+                        leaf = Path(target)
+                        if kind == "directory":
+                            leaf.mkdir()
+                            leaf = leaf / "keep"
+                        leaf.write_bytes(b"external occupied bytes")
+                        keep.append(leaf)
+                        # Windows can report access denied instead of EEXIST.
+                        raise PermissionError("injected exclusive-create denial")
+                    return real_open(target, mode, *args, **kwargs)
+
+                with mock.patch.object(exporter, "open", side_effect=occupy, create=True):
+                    with self.assertRaisesRegex(exporter.ExportError, "already exists"):
+                        exporter.write_out(self._files(), destination, str(path))
+                self.assertEqual(keep[0].read_bytes(), b"external occupied bytes")
+                self.assertEqual(list(path.parent.glob(".scene-export-*")), [])
 
     def test_created_stage_without_readable_identity_is_reported_and_retained(self):
         path, destination = self._destination()

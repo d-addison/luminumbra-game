@@ -29,6 +29,7 @@ I/O failure; 2 usage error (bad arguments, a refused --out destination, or a
 """
 
 import argparse
+import errno
 import hashlib
 import os
 import re
@@ -198,7 +199,12 @@ class _OwnedPaths:
 
     def mkdir(self, path):
         self.guard()
-        os.mkdir(path)  # exclusive even if a cooperative writer just created an empty directory
+        try:
+            os.mkdir(path)  # exclusive even if a writer just created an empty directory
+        except OSError:
+            if os.path.lexists(path):
+                raise FileExistsError(errno.EEXIST, "output path already exists", path) from None
+            raise
         self.record_directory(path)
         self.guard()
 
@@ -217,7 +223,14 @@ class _OwnedPaths:
 
     def write(self, path, data):
         self.guard()
-        handle = open(path, "xb", buffering=0)
+        try:
+            handle = open(path, "xb", buffering=0)
+        except OSError:
+            # Windows may report access denied for an occupied directory or
+            # reparse leaf. It is still an exclusive-create collision, never ours.
+            if os.path.lexists(path):
+                raise FileExistsError(errno.EEXIST, "output path already exists", path) from None
+            raise
         self.unverified_files.add(path)
         opened = before_close = None
         count = None
@@ -308,19 +321,22 @@ class _OwnedPaths:
                 retained.append("%s (%s)" % (path, exc))
         return retained
 
-    def verify_file(self, path):
-        """Recheck recorded identity/version and content using bounded streaming."""
+    def verify_file(self, path, *, capture=False):
+        """Recheck recorded identity/version and content; optionally retain verified bytes."""
         info, size, expected_digest = self.files[path]
         self._guard_ancestors(path)
         if scene.file_version(os.lstat(path)) != scene.file_version(info):
             raise ExportError("%s: output file changed" % path)
         digest = hashlib.sha256()
         count = 0
+        chunks = [] if capture else None
 
         def consume(chunk):
             nonlocal count
             count += len(chunk)
             digest.update(chunk)
+            if capture:
+                chunks.append(chunk)
 
         try:
             scene.stream_safe_file(path, path, consume, expected_size=size)
@@ -330,6 +346,8 @@ class _OwnedPaths:
         if (count != size or digest.hexdigest() != expected_digest
                 or scene.file_version(os.lstat(path)) != scene.file_version(info)):
             raise ExportError("%s: output file changed" % path)
+        if capture:
+            return b"".join(chunks)
 
     def _guard_ancestors(self, path):
         current = os.path.dirname(path)
@@ -402,16 +420,23 @@ def write_out(files, destination, label):
             stage_owned.parents(os.path.dirname(target))
             stage_owned.write(target, data)
         _publication_guard(destination, owned, initial=True)
+        # Capture the complete closed stage with recorded-size and digest checks
+        # before touching the destination. Publication never reopens these files.
+        snapshots = []
+        try:
+            stage_owned.guard()
+            for mapped, _, _ in files:
+                data = stage_owned.verify_file(_abs(stage, mapped), capture=True)
+                snapshots.append((mapped, data))
+        except ExportError as exc:
+            raise ExportError("staged file changed: %s" % exc) from None
+        _publication_guard(destination, owned, initial=True)
         if not destination.existed:
             owned.mkdir(str(destination))
-        for mapped, digest, _ in files:
+        for mapped, data in snapshots:
             _publication_guard(destination, owned)
             target = _abs(destination, mapped)
             owned.parents(os.path.dirname(target))
-            # Read the closed stage safely; never reread source presets at publication.
-            data = _read_bytes(mapped, _abs(stage, mapped))
-            if hashlib.sha256(data).hexdigest() != digest:
-                raise ExportError("%s: staged file changed" % mapped)
             _publication_guard(destination, owned)
             owned.write(target, data)
         _publication_guard(destination, owned)

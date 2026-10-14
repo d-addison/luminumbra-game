@@ -7,3 +7,14 @@
 /tools/fit_leaf_cards.exe
 *.obj
 __pycache__/
+
+# MG2 machine configuration, secrets, scratch and native observations.
+/authoring/meshgen/meshgen.local.json
+/authoring/meshgen/token.*
+/authoring/meshgen/tokens/
+/authoring/meshgen/toolchain.local.json
+/.luminumbra-author/
+/.luminumbra-author-recipes/
+/authoring/meshgen/generated/
+/authoring/meshgen/native/evidence/
+/.test-tmp/

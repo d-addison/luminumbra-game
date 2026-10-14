@@ -1,0 +1,15 @@
+{
+  "schema": "luminumbra.game.meshgen-script-inventory.v1",
+  "roles": {
+    "companion": {
+      "status": "skeleton",
+      "path": "authoring/meshgen/companion/__init__.py",
+      "modules": ["authoring/meshgen/companion/bootstrap.py"],
+      "slice": "G1"
+    },
+    "finisher": {"status": "planned", "path": "authoring/meshgen/scripts/finish_candidate.py", "slice": "G2"},
+    "generate": {"status": "planned", "path": "authoring/meshgen/companion/blender_generate.py", "slice": "G3"},
+    "import": {"status": "planned", "path": "authoring/meshgen/companion/blender_import.py", "slice": "G3"},
+    "lineage": {"status": "planned", "path": "authoring/meshgen/companion/blender_lineage.py", "slice": "G3"}
+  }
+}
