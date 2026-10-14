@@ -74,8 +74,10 @@ def _synthetic_path(value):
     if not isinstance(value, str):
         return False
     value = value.replace("\\", "/").casefold()
+    # A bare drive root is not synthetic: hosted runners check out on D:, so
+    # the real fixture's ancestor walk legitimately reaches D:\.
     return bool(re.search(r"(?:^|/)server(?:/|$)|c:/games(?:/|$)|"
-                          r"d:(?:/*$|/?(?:repository|repo|out|absent)(?:/|$))|"
+                          r"d:/?(?:repository|repo|out|absent)(?:/|$)|"
                           r"^/(?:repository|out)(?:[/]|$)", value))
 
 
