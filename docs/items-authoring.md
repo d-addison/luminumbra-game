@@ -6,11 +6,12 @@ admission, dropping, durable seed inventory and rendering belong to later slices
 authoring tests do not qualify those consumers. Packaged interaction, settling,
 restart, due expiry/Frozen behavior and drawing remain `NEEDS-NATIVE-RUN`.
 
-The declared stack is game #39, then game PR #42 (H1 authoring) at
+The declared stack is the game acceptance harness, then H1 simulation authoring at
 `d912c04aa2453d995d5c0c517ca1f66d860c7e46`, then this slice on
-`feat/h2-item-authoring-20261013`. Game #40 is deferred to v0.3.1. This slice
-extends H1's independent exporter, captured-byte loader, identities and dynamic
-validator registry. It has no dependency on a #40 file or sibling engine checkout.
+`feat/h2-item-authoring-20261013`. Distant-scene authoring is deferred to v0.3.1.
+This slice extends H1's independent exporter, captured-byte loader, identities and
+dynamic validator registry. It has no dependency on a distant-scene file or sibling
+engine checkout.
 The binding H1/H2 Q&A supersedes the earlier planning documents.
 
 ## Catalogue and identities
@@ -212,7 +213,7 @@ tests and later packaged evidence, not behaviors demonstrated by Python tests.
 | Q&A | Slice 3 handling |
 |---|---|
 | Q1 | Authoring/source/native milestones separate; runtime UNQUALIFIED |
-| Q2 | Authorized #40 deferral; explicit H1/#42 parent; reuse independent exporter |
+| Q2 | Authorized distant-scene deferral; explicit H1 simulation authoring parent; reuse independent exporter |
 | Q3 | Exact item source/destination/schema; inventory and provenance excluded from runtime |
 | Q4 | H1 exact policy shape retained |
 | Q5 | H1 empty shipping overrides retained/enforced |
@@ -238,7 +239,7 @@ tests and later packaged evidence, not behaviors demonstrated by Python tests.
 | Q25 | Every item-relevant clause mapped above to author test or explicit later real engine/native/GPU proof |
 | Q26 | Python checks only; no native/Blender/GPU execution; native rows NEEDS-NATIVE-RUN |
 
-The only order deviation is the user-declared #40 deferral: H2 follows H1 instead
+The only order deviation is the declared distant-scene deferral: H2 follows H1 instead
 and reuses its reviewed independent export transaction. Retaining H1's receipt
 identifier/layout avoids an unnecessary wire-format change. Refusing optional
 render references until a public pin exists implements Q13/Q20's authoring

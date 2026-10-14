@@ -1,7 +1,7 @@
 # Pinned E1 contract fixture
 
 These files are unmodified copies from `d-addison/luminumbra` commit
-`4a01f6d46a83c0e59503c3cb388ec3fbb04dc52a` (E1, engine PR #244).
+`4a01f6d46a83c0e59503c3cb388ec3fbb04dc52a` (E1 meshgen contracts).
 `inventory.json` records the source directory and SHA-256 of every copied file;
 `LICENSE` retains the engine's MIT notice. The game tests verify the inventory
 before importing any copied code. Missing or changed files fail discovery;

@@ -261,10 +261,32 @@ A stale hash, wrong identity or malformed sidecar refuses the export.
 - With no option it prints the manifest, one `sha256  mapped/path` line per
   file.
 - `--out DIR` writes the mapped files, byte for byte, under `DIR`. `DIR` must be
-  absent or empty. The destination is resolved, including symlinks, and refused
-  when the resolved path has a `.git` component in any letter case, or lies
-  inside the `content/` tree (exit 2). Complete output is written and closed in
-  a uniquely owned sibling stage on the destination filesystem first. Publication
+  absent or empty. Before any creation or write, the longest existing ancestor
+  is strictly resolved, expanding symlinks, junctions and Windows short names;
+  the missing tail is checked and appended afterward. The repository root and
+  `content/` directory resolve the same way before containment is compared.
+  A failed strict resolution or lost absolute anchor is refused (exit 2).
+  Literal and resolved `.git` components in any letter case, and destinations
+  inside the resolved `content/` tree, are refused (exit 2). Short-name aliases,
+  including administrator-assigned names without `~`, are resolved rather than
+  recognized by spelling (issue #46); ordinary names containing `~` are accepted.
+  On Windows, missing components with trailing spaces or dots are refused,
+  since creation can trim them into protected names such as `content` or
+  `.git`. Missing device names (including names with extensions) and path
+  components with colons such as `::$DATA` stream suffixes are also refused
+  (exit 2). POSIX keeps spaces, dots, colons and device-like names literal,
+  while still enforcing
+  `.git` and content containment. Ordinary drive paths, extended drive paths
+  (`\\?\D:\out\export`), UNC shares, `.github/x` and `x.git/y` are accepted.
+  UNC filesystem lookups are synchronous and may wait for the operating
+  system's SMB/DNS timeout; the exporter adds no network probe, retry loop or
+  separate timeout. An initial lookup failure, including an unreachable
+  server/share, is refused (exit 2) before staging or publication. Windows
+  network errors are refused immediately even when reported as `FileNotFoundError`, rather than
+  retried against each parent. An ordinary missing file/directory still causes
+  the existing-ancestor search described above.
+  Complete output is written and closed in a uniquely owned sibling stage on
+  the destination filesystem first. Publication
   uses exclusive directory and file creates, never replacement or overwrite.
   A preexisting empty destination keeps its directory identity on success and
   every failure; validation, staging and prepublication failures leave it

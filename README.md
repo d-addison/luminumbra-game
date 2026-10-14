@@ -11,11 +11,11 @@ for reusable modules and script/component/data authoring without rebuilding engi
 [H1 simulation authoring](docs/simulation-authoring.md) supplies empty coarse-policy
 overrides, bounded creature population rules, a pinned public species/biome inventory
 and exact-byte exports. Runtime adoption and native population acceptance remain
-unqualified; deferred distant-scene work (#40) is not a dependency of this slice.
+unqualified; deferred distant-scene work is not a dependency of this slice.
 
 Public art packs contain redistributable source/runtime content, provenance, conversion instructions and checksums. Private audio recordings and Steam SDK payloads are excluded. Public engine software releases remain source-only.
 
-The [September 13 recovery status](docs/roadmap.md#current-state) separates merged implementation, remaining verification and unpublished v0.3.0. The [promotion gate](https://github.com/d-addison/luminumbra/pull/55) remains blocked on expanded acceptance.
+The [September 13 recovery status](docs/roadmap.md#current-state) separates merged implementation, remaining verification and unpublished v0.3.0. The promotion gate remains blocked on expanded acceptance.
 
 ## Tree Small 02
 

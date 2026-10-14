@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Export a captured H1/H2 bundle to a fresh destination; no engine writes or discovery.
 
-Independent replacement for the deferred #40 exporter. A fresh output directory
-is reserved exclusively; one fully staged bundle is then renamed into it.
+Independent replacement for the deferred distant-scene exporter. A fresh output
+directory is reserved exclusively; one fully staged bundle is then renamed into it.
 Runtime bytes are at OUTPUT/bundle/runtime; receipt is outside that runtime tree.
 """
 
