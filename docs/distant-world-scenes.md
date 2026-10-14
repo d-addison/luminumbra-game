@@ -269,7 +269,7 @@ A stale hash, wrong identity or malformed sidecar refuses the export.
   Literal and resolved `.git` components in any letter case, and destinations
   inside the resolved `content/` tree, are refused (exit 2). Short-name aliases,
   including administrator-assigned names without `~`, are resolved rather than
-  recognized by spelling (#46); ordinary names containing `~` are accepted.
+  recognized by spelling (issue #46); ordinary names containing `~` are accepted.
   On Windows, missing components with trailing spaces or dots are refused,
   since creation can trim them into protected names such as `content` or
   `.git`. Missing device names (including names with extensions) and path

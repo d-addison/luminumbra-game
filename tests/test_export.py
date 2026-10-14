@@ -577,6 +577,7 @@ class ExportRepairTests(unittest.TestCase):
              "I/O error: " + filename + " -> " + filename2),
             ("pathlike filename", OSError(errno.EIO, "I/O error", Path("source.json")),
              "I/O error: source.json"),
+            # A single argument leaves errno and strerror unset, so str(exc) applies.
             ("errno only", OSError(errno.EIO), str(errno.EIO)),
             ("None strerror", OSError(errno.EIO, None, filename),
              "[Errno %s]: %s" % (errno.EIO, filename)),
