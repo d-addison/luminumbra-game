@@ -55,6 +55,39 @@ class ExportError(Exception):
     """A source, destination or I/O problem; the message is one 'PATH: reason' line."""
 
 
+def _error_message(exc):
+    """Keep OSError filenames readable without repr-escaping path separators."""
+    def part(name):
+        try:
+            value = getattr(exc, name)
+            if value is None:
+                return ""
+            if isinstance(value, os.PathLike):
+                value = os.fspath(value)
+            return os.fsdecode(value) if isinstance(value, bytes) else str(value)
+        except Exception:
+            # One malformed field must not hide the other usable details.
+            return ""
+
+    if isinstance(exc, OSError):
+        message = part("strerror")
+        if not message:
+            code = part("errno")
+            message = "[Errno " + code + "]" if code else ""
+        filename = part("filename")
+        filename2 = part("filename2")
+        if filename:
+            message += (": " if message else "") + filename
+        if filename2:
+            message += (" -> " if message else "") + filename2
+        if message:
+            return message
+    try:
+        return str(exc)
+    except Exception:
+        return "I/O error"
+
+
 def _abs(root, rel):
     return os.path.join(root, *rel.split("/"))
 
@@ -254,11 +287,13 @@ class _OwnedPaths:
                 # Provisional metadata cannot authorize rollback until bytes verify.
                 before_close = os.fstat(handle.fileno())
             except OSError as exc:
-                error = exc if error is None else ExportError("%s; metadata capture failed: %s" % (error, exc))
+                error = exc if error is None else ExportError(
+                    "%s; metadata capture failed: %s" % (_error_message(error), _error_message(exc)))
             try:
                 handle.close()  # a close error is a failure, never success
             except OSError as exc:
-                error = exc if error is None else ExportError("%s; close failed: %s" % (error, exc))
+                error = exc if error is None else ExportError(
+                    "%s; close failed: %s" % (_error_message(error), _error_message(exc)))
         try:
             self.guard()
             if opened is None or before_close is None:
@@ -291,7 +326,8 @@ class _OwnedPaths:
             self.files[path] = (closed, closed.st_size, digest.hexdigest())
             self.unverified_files.remove(path)
         except (OSError, ExportError, scene.SceneError) as exc:
-            error = exc if error is None else ExportError("%s; ownership verification failed: %s" % (error, exc))
+            error = exc if error is None else ExportError(
+                "%s; ownership verification failed: %s" % (_error_message(error), _error_message(exc)))
         if error is not None:
             if isinstance(error, scene.SceneError):
                 raise ExportError(str(error)) from None
@@ -310,7 +346,7 @@ class _OwnedPaths:
                 # and unlink. Complete hostile-race exclusion is not promised.
                 os.unlink(path)
             except (OSError, ExportError) as exc:
-                retained.append("%s (%s)" % (path, exc))
+                retained.append("%s (%s)" % (path, _error_message(exc)))
         for path, info in reversed(list(self.directories.items())):
             try:
                 self._guard_ancestors(path)
@@ -318,7 +354,7 @@ class _OwnedPaths:
                     raise ExportError("owned directory changed")
                 os.rmdir(path)  # refuses unknown children; never recursively deletes
             except (OSError, ExportError) as exc:
-                retained.append("%s (%s)" % (path, exc))
+                retained.append("%s (%s)" % (path, _error_message(exc)))
         return retained
 
     def verify_file(self, path, *, capture=False):
@@ -442,7 +478,7 @@ def write_out(files, destination, label):
         _publication_guard(destination, owned)
         committed = True
     except (OSError, ExportError) as exc:
-        error = "%s: cannot write output: %s" % (label, exc)
+        error = "%s: cannot write output: %s" % (label, _error_message(exc))
     # A staging cleanup failure must also refuse success and roll back publication.
     retained = stage_owned.cleanup() if stage_owned is not None else []
     if retained:
@@ -451,7 +487,7 @@ def write_out(files, destination, label):
         try:
             _publication_guard(destination, owned)
         except (OSError, ExportError) as exc:
-            error = "%s: cannot write output: %s" % (label, exc)
+            error = "%s: cannot write output: %s" % (label, _error_message(exc))
     if error is not None or not committed:
         retained.extend(owned.cleanup())
         if retained:
@@ -515,7 +551,7 @@ def main(argv=None):
             print(str(exc), file=sys.stderr)
             return 2
         except OSError as exc:
-            print("%s: cannot inspect destination: %s" % (args.out, exc.strerror or exc))
+            print("%s: cannot inspect destination: %s" % (args.out, _error_message(exc)))
             return 1
 
     try:
@@ -524,7 +560,7 @@ def main(argv=None):
         print(str(exc))
         return 1
     except OSError as exc:
-        print("%s: cannot read content: %s" % (scene.PRESET_DIR, exc.strerror or exc))
+        print("%s: cannot read content: %s" % (scene.PRESET_DIR, _error_message(exc)))
         return 1
 
     if args.check is not None:
@@ -538,7 +574,7 @@ def main(argv=None):
             print(str(exc))
             return 1
         except OSError as exc:
-            print("%s: cannot compare with engine tree: %s" % (args.check, exc.strerror or exc))
+            print("%s: cannot compare with engine tree: %s" % (args.check, _error_message(exc)))
             return 1
         for line in problems:
             print(line)

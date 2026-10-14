@@ -1,4 +1,5 @@
 import contextlib
+import errno
 import hashlib
 import io
 import json
@@ -432,6 +433,121 @@ class ExportRepairTests(unittest.TestCase):
         exporter.write_out(self._files(), exporter.check_destination(str(path), str(_REPO)), str(path))
         for mapped, _, data in self._files():
             self.assertEqual((path / mapped).read_bytes(), data)
+
+    def test_error_message_preserves_plain_filenames_and_fallback_messages(self):
+        filename = r"C:\Games\Content\source.json"
+        filename2 = r"C:\Games\Output\target.json"
+        errors = (
+            (OSError(errno.EACCES, "Permission denied"), "Permission denied"),
+            (OSError(errno.EACCES, "Permission denied", filename),
+             "Permission denied: " + filename),
+            (OSError(errno.EACCES, "Permission denied", filename, None, filename2),
+             "Permission denied: " + filename + " -> " + filename2),
+        )
+        for error, expected in errors:
+            with self.subTest(error=error):
+                self.assertEqual(exporter._error_message(error), expected)
+                self.assertNotIn(r"\\", exporter._error_message(error))
+        for error in (OSError("write failed"),
+                      exporter.ExportError(filename + ": output file changed")):
+            with self.subTest(error=error):
+                self.assertEqual(exporter._error_message(error), str(error))
+
+    def test_unusual_os_errors_format_safely_and_main_returns_one(self):
+        filename = r"C:\Games\Content\source.json"
+        filename2 = r"C:\Games\Output\target.json"
+        errors = (
+            ("tuple filename", OSError(errno.EIO, "I/O error", ("source", "target")),
+             "I/O error: ('source', 'target')"),
+            ("tuple filename2", OSError(errno.EIO, "I/O error", "source", None, ("target",)),
+             "I/O error: source -> ('target',)"),
+            ("integer strerror", OSError(errno.EIO, 123, "source.json"), "123: source.json"),
+            ("integer filename", OSError(errno.EIO, "I/O error", 123), "I/O error: 123"),
+            ("bytes filename", OSError(errno.EIO, "I/O error", os.fsencode(filename)),
+             "I/O error: " + filename),
+            ("bytes filename2", OSError(errno.EIO, "I/O error", filename, None,
+                                        os.fsencode(filename2)),
+             "I/O error: " + filename + " -> " + filename2),
+            ("pathlike filename", OSError(errno.EIO, "I/O error", Path("source.json")),
+             "I/O error: source.json"),
+            ("errno only", OSError(errno.EIO), str(errno.EIO)),
+            ("None strerror", OSError(errno.EIO, None, filename),
+             "[Errno %s]: %s" % (errno.EIO, filename)),
+            ("None filenames", OSError(errno.EIO, "I/O error", None, None, None), "I/O error"),
+            ("None fields", OSError(None, None), str(OSError(None, None))),
+        )
+        for name, error, expected in errors:
+            with self.subTest(shape=name):
+                self.assertEqual(exporter._error_message(error), expected)
+                with mock.patch.object(exporter, "collect_sources", side_effect=error):
+                    code, out, err = _run([])
+                self.assertEqual(code, 1)
+                self.assertEqual(out, exporter.scene.PRESET_DIR + ": cannot read content: " + expected + "\n")
+                self.assertEqual(err, "")
+                self.assertNotIn(r"\\", out)
+
+    def test_error_message_survives_failed_field_conversion_and_fallback(self):
+        class Unprintable:
+            def __str__(self):
+                raise ValueError("cannot stringify")
+
+        class BrokenPath(os.PathLike):
+            def __fspath__(self):
+                raise ValueError("cannot resolve path")
+
+        class BrokenError(OSError):
+            def __str__(self):
+                raise ValueError("cannot stringify error")
+
+        errors = (
+            (OSError(errno.EIO, Unprintable(), "source.json"),
+             "[Errno %s]: source.json" % errno.EIO),
+            (OSError(errno.EIO, "I/O error", BrokenPath()), "I/O error"),
+            (BrokenError(), "I/O error"),
+        )
+        for error, expected in errors:
+            with self.subTest(shape=type(error).__name__, expected=expected):
+                self.assertEqual(exporter._error_message(error), expected)
+                with mock.patch.object(exporter, "collect_sources", side_effect=error):
+                    code, out, err = _run([])
+                self.assertEqual(code, 1)
+                self.assertIn(expected, out)
+                self.assertEqual(err, "")
+
+    def test_write_failures_use_plain_windows_filenames_before_and_after_stage_cleanup(self):
+        filename = r"C:\Games\Content\source.json"
+        filename2 = r"C:\Games\Output\target.json"
+        original_guard = exporter._publication_guard
+        original_cleanup = exporter._OwnedPaths.cleanup
+        for phase in ("publication", "after-stage-cleanup"):
+            with self.subTest(phase=phase):
+                path, destination = self._destination(name=phase)
+                error = OSError(errno.EACCES, "Permission denied", filename, None, filename2)
+                state = {"stage_cleaned": False, "injected": False}
+
+                def cleanup(owned):
+                    retained = original_cleanup(owned)
+                    state["stage_cleaned"] = True
+                    return retained
+
+                def guard(destination, owned, *, initial=False):
+                    if not state["injected"] and (phase == "publication" or state["stage_cleaned"]):
+                        state["injected"] = True
+                        raise error
+                    return original_guard(destination, owned, initial=initial)
+
+                with mock.patch.object(exporter._OwnedPaths, "cleanup", new=cleanup), \
+                     mock.patch.object(exporter, "_publication_guard", side_effect=guard), \
+                     mock.patch.object(exporter, "_error_message", wraps=exporter._error_message) as formatter:
+                    with self.assertRaises(exporter.ExportError) as caught:
+                        exporter.write_out(self._files(), destination, str(path))
+                    formatter.assert_called_once_with(error)
+                self.assertTrue(state["injected"])
+                self.assertEqual(str(caught.exception),
+                                 "%s: cannot write output: Permission denied: %s -> %s"
+                                 % (path, filename, filename2))
+                self.assertNotIn(r"\\", str(caught.exception))
+                self._assert_clean(path, False, None)
 
     def _assert_growth_reader_bounded(self, reader, size):
         remaining = size + 1

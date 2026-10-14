@@ -11,12 +11,12 @@ H2 now extends the same exporter with a third mapping for the item catalogue.
 See [item authoring](items-authoring.md) for slice 3's schema, identities and Q25
 matrix. The H1-specific gates and history below remain applicable.
 
-The declared stack is game #39 at
-`7a54e52e34dd0c29504907ca7da9c4c45a5a1835`, then this slice. Game #40 (distant
-scenes) is deferred to v0.3.1. This slice uses no #40 file and introduces the
-minimal independent `tools/export_game_data.py` and captured-byte loader support.
+The declared stack is the game acceptance harness at
+`7a54e52e34dd0c29504907ca7da9c4c45a5a1835`, then this slice. Distant-scene
+authoring is deferred to v0.3.1. This slice uses no distant-scene file and introduces
+the minimal independent `tools/export_game_data.py` and captured-byte loader support.
 There is no cave copy, scene mapping or engine modification here. This declared
-order change supersedes Q2's original #40 prerequisite.
+order change supersedes Q2's original distant-scene prerequisite.
 
 The engine authoring pin is `4c15419e9ba064c94e2933df73106991d92f1623` (S5/S6).
 The uncommitted DistantPolicy draft informed structural fields; it supplies no
@@ -216,7 +216,7 @@ keys or float-backed u64 settings are authored here.
 | Q&A | Slice 2 handling |
 |---|---|
 | Q1 | Authoring, source integration and native milestones separated; runtime unqualified |
-| Q2 | Explicit authorized order change: #39 parent; #40 deferred; independent exporter and portable reserved-output bundle transaction |
+| Q2 | Explicit authorized order change: acceptance harness parent; distant scenes deferred; independent exporter and portable reserved-output bundle transaction |
 | Q3 | Exact two H1 mappings/schemas; author provenance excluded from runtime |
 | Q4 | Exact policy root/block fields, domains, candidate-only parsing |
 | Q5 | Empty shipping overrides enforced; examples only in fixtures |
@@ -236,7 +236,7 @@ keys or float-backed u64 settings are authored here.
 | Q26 | Python author checks only; native/GPU acceptance stays NEEDS-NATIVE-RUN |
 
 The independent exporter and its outer reservation/bundle layout replace the
-unavailable #40 transaction under the declared order change. Population RNG
+unavailable distant-scene transaction under the declared order change. Population RNG
 vectors and terrain callback tests are not invented: no engine contract/consumer
 exists in this author slice, so those Q25 clauses remain adoption gates. No other
 schema/identity/limit deviation is intended.
