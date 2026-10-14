@@ -154,11 +154,11 @@ class PresetRestrictionTests(unittest.TestCase):
 
 class PresetIdentityTests(unittest.TestCase):
     def test_default_preset_pin(self):
-        preset = identity.loads_strict(_read_fixture("engine-default-preset.json"))
+        preset = identity.loads_strict(_read_fixture("engine-default-preset-rev6.json"))
         self.assertEqual(identity.preset_identity(preset), _DEFAULT_PRESET_PIN)
 
     def test_pin_matches_engine_traversal_token(self):
-        preset = identity.loads_strict(_read_fixture("engine-default-preset.json"))
+        preset = identity.loads_strict(_read_fixture("engine-default-preset-rev6.json"))
         engine = traversal.parse(_read_fixture("engine-surface-flight.traversal"))
         self.assertEqual(engine.preset_identity, _DEFAULT_PRESET_PIN)
         self.assertEqual(identity.preset_identity(preset), engine.preset_identity)

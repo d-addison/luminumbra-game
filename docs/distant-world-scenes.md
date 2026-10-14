@@ -22,7 +22,11 @@ to its station.
 
 ## The cave_dense preset
 
-`content/presets/cave_dense.json` is an engine-format preset at `schema_rev` 6.
+`content/presets/cave_dense.json` is byte-identical to the engine's
+`worlds/atlas/presets/cave_dense.json` at `schema_rev` 7.
+Island masking, biome relief and cliffs are enabled, and hydro uses four
+iterations. This preset export supersedes the revision 6 baseline; frozen
+revision 6 traversal workloads retain their historical pins.
 It has the same key set as `caverns`, with no added keys. Only these values
 differ from `caverns`, apart from `name` and `description`:
 
@@ -38,7 +42,7 @@ the loader would clamp, and requires these three values exactly for
 
 Every exported preset must have exactly the four top-level keys `name`,
 `description`, `schema_rev` and `generation_params`, with a non-empty
-`generation_params`. Under `generation_params` the validator checks a shape table
+`generation_params` and integer `schema_rev` 7. Under `generation_params` the validator checks a shape table
 (`PRESET_SHAPE` in `tools/validators/scene.py`) written from the two engine
 fixtures, `tests/fixtures/engine-caverns-preset.json` and
 `tests/fixtures/engine-default-preset.json`. A key outside the union of the two
@@ -71,8 +75,14 @@ are exactly these three values plus `name` and `description`.
 
 ### Identity sidecar
 
-The preset identity is the 16-hex-digit FNV-1a 64-bit hash of the canonical
-JSON of the preset object. It is not stored inside the preset file. It lives in
+The engine's `TerrainPresetContentHash` resolves revision-specific defaults,
+normalizes `schema_rev` to 7 and hashes compact, sorted, ASCII-escaped JSON
+with FNV-1a 64-bit, formatted as 16 lowercase hex digits. All relevant defaults
+are explicit in `cave_dense`, and its text is ASCII, so the game tooling's
+canonical JSON produces the same bytes for this preset. Its identity is
+`5d081f382b2d5d0d`; its file SHA-256 is
+`4b7c31ac3354db8921aea738749488525da6cb4d122a982c556a797b4ec82a1b`.
+The identity is not stored inside the preset file. It lives in
 `content/presets/cave_dense.identity.json`
 (`luminumbra.game.preset-identity.v1`) with four keys:
 
@@ -84,7 +94,7 @@ JSON of the preset object. It is not stored inside the preset file. It lives in
 To recompute the identity of the preset file, run from the repository root:
 
 ```
-python3 -I tools/traversal_tool.py identity content/presets/cave_dense.json
+python3 -I -B tools/traversal_tool.py identity content/presets/cave_dense.json
 ```
 
 Then update both sidecar fields to match. The validator recomputes both and
