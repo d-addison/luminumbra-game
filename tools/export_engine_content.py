@@ -10,9 +10,16 @@ Usage:
 The only mapping at v0.3 is content/presets/<name>.json to
 worlds/atlas/presets/<name>.json. Identity sidecars (*.identity.json) are not
 exported, but each preset and its sibling sidecar are validated before anything
-else happens against the exact captured bytes; any problem refuses the export. The --out destination is resolved
-(symlinks included) and refused when the resolved path has a .git component in
-any letter case, or lies inside the content/ tree.
+else happens against the exact captured bytes; any problem refuses the export.
+Before any creation or write, --out strictly resolves its longest existing
+ancestor (including symlinks, junctions and Windows short names), then appends
+the missing tail. The repository and content directory resolve the same way.
+Resolution failure or loss of an absolute anchor refuses the destination, as
+does a literal or resolved .git component in any letter case or containment in
+content/. On Windows, missing components with trailing spaces/dots or device
+names, and path components with colons (including stream suffixes), are refused.
+POSIX keeps spaces, dots, colons and device-like names literal. Names containing
+~ are accepted; short-name spellings are resolved, never guessed.
 
 Manifest lines are "sha256  mapped/path" (two spaces), sorted by mapped path.
 Files are copied as exact bytes. --out closes a unique sibling stage before
@@ -166,7 +173,11 @@ def manifest_lines(files):
 
 def _key(path):
     """Comparison key: the path normalised for the platform and case-folded."""
-    return os.path.normcase(path).casefold()
+    key = os.path.normcase(path).casefold()
+    if os.path.sep == "\\" and key.startswith("\\\\?\\"):
+        # Strict Windows resolution can retain the caller's extended prefix.
+        key = "\\\\" + key[8:] if key.startswith("\\\\?\\unc\\") else key[4:]
+    return key
 
 
 def _has_git_component(path):
@@ -176,7 +187,60 @@ def _has_git_component(path):
 def _is_within(path, base):
     inside = _key(path)
     outside = _key(base)
-    return inside == outside or inside.startswith(outside.rstrip(os.sep) + os.sep)
+    return inside == outside or inside.startswith(outside.rstrip(os.path.sep) + os.path.sep)
+
+
+def _absolute_anchor(path):
+    if os.path.sep == "\\":
+        key = _key(path)
+        if key.startswith("\\\\.\\"):
+            return False
+        drive, tail = os.path.splitdrive(key)
+        if drive.startswith("\\\\"):
+            parts = drive[2:].split("\\")
+            return len(parts) == 2 and all(parts) and (tail == "" or tail.startswith("\\"))
+        return bool(drive) and tail.startswith("\\")
+    return os.path.isabs(path)
+
+
+def _resolve_existing_ancestor(path, label):
+    """Strictly resolve an existing prefix; append only checked missing components."""
+    try:
+        ancestor = os.path.abspath(path)
+        if not _absolute_anchor(ancestor):
+            raise ValueError("path has no absolute anchor")
+        if os.path.sep == "\\" and ":" in os.path.splitdrive(ancestor)[1]:
+            raise ValueError("unsafe Windows path component (colon or stream suffix)")
+        missing = []
+        while True:
+            try:
+                os.lstat(ancestor)
+                break
+            except (FileNotFoundError, NotADirectoryError):
+                parent, part = os.path.split(ancestor)
+                if parent == ancestor or not parent or not part:
+                    raise ValueError("no existing ancestor") from None
+                missing.append(part)
+                ancestor = parent
+        # Non-strict realpath can preserve an unresolved short name or return a
+        # drive-relative fallback. Never use it for an existing ancestor.
+        resolved = os.path.realpath(ancestor, strict=True)
+        if not _absolute_anchor(resolved):
+            raise ValueError("resolved ancestor has no absolute anchor")
+        if os.path.sep == "\\":
+            if ":" in os.path.splitdrive(resolved)[1]:
+                raise ValueError("unsafe Windows path component (colon or stream suffix)")
+            for part in missing:
+                stem = part.split(".", 1)[0].rstrip(" ").casefold()
+                if (part.rstrip(" .") != part or ":" in part
+                        or scene.is_reserved_stem(stem)
+                        or stem in ("conin$", "conout$")
+                        or re.fullmatch(r"(?:com|lpt)[¹²³]", stem)):
+                    raise ValueError("unsafe missing Windows path component")
+        return os.path.join(resolved, *reversed(missing))
+    except (OSError, ValueError) as exc:
+        raise ExportError("%s: refuses destination: %s" %
+                          (_escape_controls(label), _error_message(exc))) from None
 
 
 class Destination(str):
@@ -190,10 +254,16 @@ class Destination(str):
 
 
 def _restrictions(out, root):
-    resolved = os.path.realpath(os.path.abspath(out))
+    # Reject literal .git before Windows fallback/rejoining can discard it,
+    # notably when a later component contains an embedded drive spelling.
+    if _has_git_component(out):
+        raise ExportError("%s: refuses to write inside a path with a .git component" % _escape_controls(out))
+    resolved = _resolve_existing_ancestor(out, out)
     if _has_git_component(resolved):
         raise ExportError("%s: refuses to write inside a path with a .git component" % _escape_controls(out))
-    if _is_within(resolved, os.path.realpath(_abs(root, "content"))):
+    resolved_root = _resolve_existing_ancestor(root, out)
+    content = _resolve_existing_ancestor(_abs(resolved_root, "content"), out)
+    if _is_within(resolved, content):
         raise ExportError("%s: refuses to write inside the content tree" % _escape_controls(out))
     return resolved
 
