@@ -1,18 +1,175 @@
 """Host-independent Windows filesystem regressions for export restrictions."""
 
+import builtins
 import contextlib
+import functools
+import genericpath
 import hashlib
+import inspect
 import io
 import ntpath
 import os
+import pathlib
 import posixpath
+import re
+import shutil
 import stat
+import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
 
 from test_export import exporter, _run
+
+
+def _lexical_normpath(path, windows=True):
+    """Normalize in memory, without nt/posix native bindings."""
+    if windows:
+        path = path.replace("/", "\\")
+        drive, tail = ntpath.splitdrive(path)
+        sep = "\\"
+    else:
+        drive, tail, sep = "", path, "/"
+    rooted = tail.startswith(sep)
+    parts = []
+    for part in tail.split(sep):
+        if part in ("", "."):
+            continue
+        if part == ".." and parts and parts[-1] != "..":
+            parts.pop()
+        elif part != ".." or not rooted:
+            parts.append(part)
+    return drive + (sep if rooted else "") + sep.join(parts) or "."
+
+
+_STORAGE_OPERATIONS = (
+    "stat", "lstat", "open", "scandir", "listdir", "mkdir", "makedirs",
+    "rename", "replace", "remove", "rmdir", "unlink", "access", "chmod", "utime",
+    "readlink", "symlink", "link", "walk", "fwalk", "chdir", "truncate",
+    "_getfinalpathname", "_getfullpathname", "_getvolumepathname", "_path_normpath",
+    "_path_exists", "_path_isdir", "_path_isfile", "_path_islink", "_path_isdevdrive",
+    "_path_isjunction", "_path_ismount",
+    "_nt_readlink", "_findfirstfile",
+)
+_PATH_OPERATIONS = (
+    "exists", "lexists", "isdir", "isfile", "islink", "realpath", "abspath",
+    "normpath", "samefile", "getsize", "getmtime", "getatime", "getctime", "ismount",
+    "isjunction", "isdevdrive", "relpath",
+)
+_PATH_METHODS = (
+    "resolve", "exists", "is_dir", "is_file", "is_symlink", "stat", "lstat",
+    "mkdir", "open", "iterdir", "samefile", "absolute", "read_bytes", "read_text",
+    "write_bytes", "write_text", "rename", "replace", "unlink", "rmdir", "touch",
+    "chmod", "lchmod", "readlink", "symlink_to", "hardlink_to", "glob", "rglob",
+    "walk", "is_junction", "is_mount",
+)
+
+
+def _synthetic_path(value):
+    if isinstance(value, os.PathLike):
+        value = os.fspath(value)
+    if isinstance(value, bytes):
+        value = os.fsdecode(value)
+    if not isinstance(value, str):
+        return False
+    value = value.replace("\\", "/").casefold()
+    return bool(re.search(r"(?:^|/)server(?:/|$)|c:/games(?:/|$)|"
+                          r"d:(?:/*$|/?(?:repository|repo|out|absent)(?:/|$))|"
+                          r"^/(?:repository|out)(?:[/]|$)", value))
+
+
+def _tripwire_targets():
+    targets = [(os, _STORAGE_OPERATIONS)]
+    targets.extend((module, _PATH_OPERATIONS + _STORAGE_OPERATIONS)
+                   for module in {os.path, ntpath, posixpath, genericpath})
+    targets.extend((sys.modules[name], _STORAGE_OPERATIONS)
+                   for name in ("nt", "posix") if name in sys.modules)
+    targets.extend((cls, _PATH_METHODS)
+                   for cls in (pathlib.Path, pathlib.WindowsPath, pathlib.PosixPath))
+    for module in (shutil, tempfile):
+        targets.append((module, tuple(name for name, value in vars(module).items()
+                                      if inspect.isfunction(value) or inspect.isbuiltin(value))))
+    targets.extend((value, ("__init__",)) for value in vars(tempfile).values()
+                   if inspect.isclass(value) and value.__module__ == tempfile.__name__)
+    targets.extend(((io, ("open",)), (builtins, ("open",))))
+    return targets
+
+
+@contextlib.contextmanager
+def _storage_tripwire(*, expect_hits=False):
+    """Reject synthetic paths before a host call, permitting real local fixtures.
+
+    Wrap attributes AND platform builtins: ntpath imports native functions by
+    value, and Path/shutil/tempfile can hide storage access behind other APIs.
+    The test lifecycle owns this context, including setup, assertions and cleanup.
+    """
+    targets = _tripwire_targets()
+    seen, originals, hits = set(), {}, []
+    with contextlib.ExitStack() as guards:
+        for owner, names in targets:
+            for name in names:
+                if (id(owner), name) in seen or not hasattr(owner, name):
+                    continue
+                seen.add((id(owner), name))
+                original = getattr(owner, name)
+                if not callable(original):
+                    continue
+                label = owner.__name__ + "." + name
+
+                @functools.wraps(original)
+                def guarded(*args, _original=original, _label=label, **kwargs):
+                    for value in (*args, *kwargs.values()):
+                        if _synthetic_path(value):
+                            caller = sys._getframe(1)
+                            message = "host storage access: %s(%r) from %s:%s" % (
+                                _label, value, caller.f_code.co_filename, caller.f_lineno)
+                            hits.append(message)
+                            raise AssertionError(message)
+                    return _original(*args, **kwargs)
+
+                originals[id(original)] = guarded
+                guards.enter_context(mock.patch.object(owner, name, guarded))
+        # Imported-by-value aliases in exporter/helper modules must not evade
+        # the tripwire. Audit defaults, closures, partials and cache wrappers too;
+        # these bindings cannot be fixed by replacing a module's os attribute.
+        for module in tuple(sys.modules.values()):
+            filename = getattr(module, "__file__", "") or ""
+            if not filename.startswith(exporter._TOOLS_DIR + os.sep):
+                continue
+            for name, value in tuple(vars(module).items()):
+                replacement = originals.get(id(value))
+                if replacement is not None:
+                    guards.enter_context(mock.patch.object(module, name, replacement))
+                    continue
+                pending, inspected = [value], set()
+                while pending:
+                    bound = pending.pop()
+                    if id(bound) in inspected:
+                        continue
+                    inspected.add(id(bound))
+                    if id(bound) in originals:
+                        raise AssertionError("captured host storage callable: %s.%s" %
+                                             (module.__name__, name))
+                    if isinstance(bound, functools.partial):
+                        pending.extend((bound.func, *bound.args, *bound.keywords.values()))
+                    if inspect.isfunction(bound):
+                        pending.extend(bound.__defaults__ or ())
+                        pending.extend((bound.__kwdefaults__ or {}).values())
+                        for cell in bound.__closure__ or ():
+                            try:
+                                pending.append(cell.cell_contents)
+                            except ValueError:  # an unbound closure cell
+                                pass
+                    if inspect.isfunction(bound) or hasattr(bound, "cache_info"):
+                        pending.append(getattr(bound, "__wrapped__", None))
+        try:
+            yield
+        finally:
+            # Export diagnostic helpers catch Exception while formatting broken
+            # fields. Even a swallowed AssertionError must fail this test.
+            if hits and not expect_hits:
+                raise AssertionError("\n".join(hits))
 
 
 class _MemoryFile(io.BytesIO):
@@ -44,7 +201,11 @@ class _WindowsFilesystem:
     root = r"D:\repository"
 
     def __init__(self, content=True, windows=True):
-        self.flavour = ntpath if windows else posixpath
+        module = ntpath if windows else posixpath
+        self.flavour = SimpleNamespace(**{name: getattr(module, name) for name in
+                                         ("sep", "normcase", "join", "split", "splitdrive",
+                                          "dirname", "basename", "isabs")})
+        self.flavour.normpath = lambda path: _lexical_normpath(path, windows)
         self.root = r"D:\repository" if windows else "/repository"
         self.nodes, self.data, self.aliases, self.links, self.spellings = {}, {}, {}, {}, {}
         self.descriptors, self.resolutions, self.created, self.writes = {}, [], [], []
@@ -268,8 +429,36 @@ class ExportPathRestrictionTests(unittest.TestCase):
     data = b"exported bytes\n"
     mapped = "worlds/atlas/presets/example.json"
 
+    def setUp(self):
+        guards = _storage_tripwire()
+        guards.__enter__()
+        self.addCleanup(guards.__exit__, None, None, None)
+
     def files(self):
         return [(self.mapped, hashlib.sha256(self.data).hexdigest(), self.data)]
+
+    def test_tripwire_blocks_host_apis_before_they_can_touch_storage(self):
+        with _storage_tripwire(expect_hits=True):
+            self._assert_tripwire_blocks_host_apis()
+
+    def _assert_tripwire_blocks_host_apis(self):
+        spellings = (r"D:\out\export", r"\\server\share\export",
+                     r"\\?\UNC\server\share\export", r".git/C:\Games\x.json",
+                     "/repository/content/export", b"\\\\server\\share\\export")
+        for owner, names in _tripwire_targets():
+            for name in names:
+                operation = getattr(owner, name, None)
+                if not callable(operation):
+                    continue  # API availability differs by Python/platform.
+                for path in spellings:
+                    with self.subTest(api=owner.__name__ + "." + name, path=path):
+                        with self.assertRaisesRegex(AssertionError, "host storage access:"):
+                            operation(path)
+        # Keyword destinations and PathLike arguments must be intercepted too.
+        with self.assertRaisesRegex(AssertionError, "host storage access:"):
+            tempfile.TemporaryDirectory(dir=spellings[2])
+        with self.assertRaisesRegex(AssertionError, "host storage access:"):
+            os.stat(pathlib.PureWindowsPath(spellings[2]))
 
     def assert_refused(self, filesystem, out, reason, root=None):
         before = dict(filesystem.nodes)
@@ -385,7 +574,7 @@ class ExportPathRestrictionTests(unittest.TestCase):
                             self.assertEqual(code, 0, stdout + stderr)
                             self.assertEqual(stderr, "")
                         else:
-                            exporter.write_out(self.files(), local, out)
+                            exporter.write_out(self.files(), local, local)
                         with open(os.path.join(local, *self.mapped.split("/")), "rb") as handle:
                             self.assertEqual(handle.read(), self.data)
                         self.assertFalse(any(name.startswith(".scene-export-")
