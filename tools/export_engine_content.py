@@ -203,7 +203,7 @@ class _OwnedPaths:
             os.mkdir(path)  # exclusive even if a writer just created an empty directory
         except OSError:
             if os.path.lexists(path):
-                raise FileExistsError(errno.EEXIST, "output path already exists", path) from None
+                raise FileExistsError(errno.EEXIST, "output path already exists: %s" % path) from None
             raise
         self.record_directory(path)
         self.guard()
@@ -229,7 +229,7 @@ class _OwnedPaths:
             # Windows may report access denied for an occupied directory or
             # reparse leaf. It is still an exclusive-create collision, never ours.
             if os.path.lexists(path):
-                raise FileExistsError(errno.EEXIST, "output path already exists", path) from None
+                raise FileExistsError(errno.EEXIST, "output path already exists: %s" % path) from None
             raise
         self.unverified_files.add(path)
         opened = before_close = None
