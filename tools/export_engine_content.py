@@ -20,6 +20,9 @@ content/. On Windows, missing components with trailing spaces/dots or device
 names, and path components with colons (including stream suffixes), are refused.
 POSIX keeps spaces, dots, colons and device-like names literal. Names containing
 ~ are accepted; short-name spellings are resolved, never guessed.
+UNC lookups use the operating system's timeouts, with no added network probe
+or retry loop. Network lookup errors refuse --out before any writes, including
+Windows network failures reported as FileNotFoundError.
 
 Manifest lines are "sha256  mapped/path" (two spaces), sorted by mapped path.
 Files are copied as exact bytes. --out closes a unique sibling stage before
@@ -216,7 +219,11 @@ def _resolve_existing_ancestor(path, label):
             try:
                 os.lstat(ancestor)
                 break
-            except (FileNotFoundError, NotADirectoryError):
+            except (FileNotFoundError, NotADirectoryError) as exc:
+                # Windows maps some network failures to ENOENT as well. They
+                # must not trigger another potentially slow lookup per ancestor.
+                if getattr(exc, "winerror", None) not in (None, 2, 3, 267):
+                    raise
                 parent, part = os.path.split(ancestor)
                 if parent == ancestor or not parent or not part:
                     raise ValueError("no existing ancestor") from None

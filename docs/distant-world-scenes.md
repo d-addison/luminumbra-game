@@ -278,6 +278,13 @@ A stale hash, wrong identity or malformed sidecar refuses the export.
   while still enforcing
   `.git` and content containment. Ordinary drive paths, extended drive paths
   (`\\?\D:\out\export`), UNC shares, `.github/x` and `x.git/y` are accepted.
+  UNC filesystem lookups are synchronous and may wait for the operating
+  system's SMB/DNS timeout; the exporter adds no network probe, retry loop or
+  separate timeout. An initial lookup failure, including an unreachable
+  server/share, is refused (exit 2) before staging or publication. Windows
+  network errors are refused immediately even when reported as `FileNotFoundError`, rather than
+  retried against each parent. An ordinary missing file/directory still causes
+  the existing-ancestor search described above.
   Complete output is written and closed in a uniquely owned sibling stage on
   the destination filesystem first. Publication
   uses exclusive directory and file creates, never replacement or overwrite.

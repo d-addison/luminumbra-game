@@ -7,6 +7,7 @@ import ntpath
 import os
 import posixpath
 import stat
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -48,13 +49,20 @@ class _WindowsFilesystem:
         self.nodes, self.data, self.aliases, self.links, self.spellings = {}, {}, {}, {}, {}
         self.descriptors, self.resolutions, self.created, self.writes = {}, [], [], []
         self.resolution_errors, self.resolution_results = {}, {}
-        self.path = SimpleNamespace(**vars(self.flavour))
+        # Only lexical path functions may come from the host. In particular,
+        # ntpath.abspath/realpath and predicates can access Windows filesystems.
+        self.path = SimpleNamespace(**{name: getattr(self.flavour, name) for name in
+                                      ("sep", "normcase", "normpath", "join", "split",
+                                       "splitdrive", "dirname", "isabs")})
         self.path.abspath = self.abspath
         self.path.realpath = self.realpath
         self.path.lexists = self.lexists
         self.path.exists = self.exists
         self.path.isdir = self.isdir
-        self.os = SimpleNamespace(**vars(os))
+        self.os = SimpleNamespace(**{name: getattr(os, name) for name in
+                                    ("O_RDONLY", "O_BINARY", "O_NOFOLLOW", "O_NONBLOCK",
+                                     "PathLike", "fspath", "fsdecode")
+                                    if hasattr(os, name)})
         self.os.path = self.path
         self.os.name, self.os.sep = ("nt", "\\") if windows else ("posix", "/")
         for method in ("lstat", "listdir", "mkdir", "rmdir", "unlink", "walk",
@@ -228,14 +236,31 @@ class _WindowsFilesystem:
 
     @contextlib.contextmanager
     def installed(self, files):
-        # Patch module references, never the shared host os/ntpath modules.
+        # Inject module references; the host operations below are forbidden,
+        # never redirected to the simulated filesystem.
         with mock.patch.object(exporter, "os", self.os), \
              mock.patch.object(exporter.scene, "os", self.os), \
              mock.patch.object(exporter, "REPO_ROOT", self.root), \
              mock.patch.object(exporter, "tempfile", SimpleNamespace(mkdtemp=self.mkdtemp)), \
              mock.patch.object(exporter, "open", self.open_file, create=True), \
              mock.patch.object(exporter, "collect_sources", return_value=[]), \
-             mock.patch.object(exporter, "load_files", return_value=files):
+             mock.patch.object(exporter, "load_files", return_value=files), \
+             contextlib.ExitStack() as guards:
+            # argparse may read local translation catalogues while constructing
+            # a parser. Construct it before forbidding host filesystem access.
+            parser = exporter._build_parser()
+            guards.enter_context(mock.patch.object(exporter, "_build_parser", return_value=parser))
+            # Fail immediately if a helper escapes the injected namespace. This
+            # also catches host-dependent lookups hidden inside library calls.
+            path_operations = ("abspath", "realpath", "exists", "lexists",
+                               "isdir", "isfile", "islink")
+            modules = [(os, ("stat", "lstat", "open", "listdir", "scandir",
+                             "mkdir", "rmdir", "unlink", "readlink"))]
+            modules.extend((module, path_operations) for module in {os.path, ntpath, posixpath})
+            for module, names in modules:
+                for name in names:
+                    guards.enter_context(mock.patch.object(
+                        module, name, side_effect=AssertionError("host filesystem access: " + name)))
             yield
 
 
@@ -350,6 +375,50 @@ class ExportPathRestrictionTests(unittest.TestCase):
                     self.assertTrue(filesystem.resolutions)
                     self.assertTrue(all(strict for _, strict in filesystem.resolutions))
                     self.assertFalse(any(".scene-export-" in path for path in filesystem.nodes))
+                    # The spelling decision above is entirely simulated. Exercise
+                    # the same publication entry point on real local storage too.
+                    with tempfile.TemporaryDirectory() as directory:
+                        local = os.path.join(directory, "export")
+                        if entry == "main":
+                            with mock.patch.object(exporter, "load_files", return_value=self.files()):
+                                code, stdout, stderr = _run(["--out", local])
+                            self.assertEqual(code, 0, stdout + stderr)
+                            self.assertEqual(stderr, "")
+                        else:
+                            exporter.write_out(self.files(), local, out)
+                        with open(os.path.join(local, *self.mapped.split("/")), "rb") as handle:
+                            self.assertEqual(handle.read(), self.data)
+                        self.assertFalse(any(name.startswith(".scene-export-")
+                                             for name in os.listdir(directory)))
+
+    def test_unreachable_unc_is_refused_without_ancestor_retries(self):
+        for out in (r"\\server\share\missing\export", r"\\?\UNC\server\share\missing\export"):
+            for phase in ("lstat", "realpath"):
+                # Network errors may be FileNotFoundError on Windows, despite
+                # meaning that the server/share cannot be reached at all.
+                for winerror in (53, 64, 67, 121, 1231, 1232):
+                    with self.subTest(out=out, phase=phase, winerror=winerror):
+                        filesystem = _WindowsFilesystem()
+                        failure = FileNotFoundError(2, "network unavailable", out)
+                        failure.winerror = winerror
+                        attempts = []
+
+                        def lstat(path):
+                            attempts.append(path)
+                            if phase == "lstat":
+                                raise failure
+                            return filesystem.lstat(path)
+
+                        if phase == "realpath":
+                            filesystem.add_directory(out)
+                            filesystem.resolution_errors[filesystem.key(out)] = failure
+                        with mock.patch.object(filesystem.os, "lstat", side_effect=lstat):
+                            self.assert_refused(filesystem, out, "network unavailable")
+                        # One lookup for main and one for the direct API; no
+                        # repeated attempts against the share or its parents.
+                        self.assertEqual(attempts, [out, out])
+                        self.assertEqual(filesystem.resolutions,
+                                         [(out, True), (out, True)] if phase == "realpath" else [])
 
     def test_extended_paths_compare_with_unprefixed_content(self):
         filesystem = _WindowsFilesystem()
