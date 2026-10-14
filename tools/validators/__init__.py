@@ -29,6 +29,7 @@ raises RegistryError on a duplicate, an import failure or a malformed table.
 import importlib
 import pkgutil
 from dataclasses import dataclass
+from typing import Optional
 
 
 class RegistryError(Exception):
@@ -41,6 +42,9 @@ class Context:
     allow_pending: bool
     release: bool
     raw: bytes = None
+    expected_engine_revision: Optional[str] = None
+    expected_game_revision: Optional[str] = None
+    artifact_root: Optional[str] = None
 
 
 def _table(module, attr):

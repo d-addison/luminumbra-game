@@ -12,16 +12,25 @@ tools/validators package; see its docstring.
 
 Usage:
   python3 -I tools/validate_content.py --root . --allow-pending
-  python3 -I tools/validate_content.py --root . --release
+  python3 -I tools/validate_content.py --root . --release \
+    --expected-engine-revision ENGINE_SHA --expected-game-revision MEASURED_GAME_SHA \
+    --artifact-root CAPTURE_ROOT
 
 Without a flag, entries marked pending are refused. --allow-pending permits
 them. --release refuses them and sets release=True in the validator context.
 
+Scene release validators require explicit candidate pins (40 lowercase hex) and
+a capture store at CAPTURE_ROOT/sha256/<capture_sha256>. Other release schemas
+need no scene flags. Malformed supplied flags are usage errors in every mode;
+missing scene release context is a validation problem.
+
 Exit codes: 0 ok or nothing to validate, 1 problems found, 2 usage error.
 """
 
+import argparse
 import fnmatch
 import os
+import re
 import sys
 from dataclasses import replace
 
@@ -173,15 +182,21 @@ def _check_entry(root, rel, schemas, globs, ctx):
     return _check_schema(rel, obj, schemas, replace(ctx, raw=raw))
 
 
-def validate_tree(root, allow_pending, release, schemas=None, globs=None):
+def validate_tree(root, allow_pending, release, schemas=None, globs=None, *,
+                  expected_engine_revision=None, expected_game_revision=None, artifact_root=None):
     """Return the problems found under ROOT/content and ROOT/docs/evidence.
 
     schemas and globs default to the discovered registry when both are None;
     when only one is None it is treated as empty. Absent zone directories yield
     no problems. A zone root that is a symlink or a non-directory is refused.
+    Supplied context is checked even on an empty tree; only scene release
+    validators require the optional pins and artifact root to be present.
     """
     if allow_pending and release:
         raise ValueError("allow_pending and release are mutually exclusive")
+    problems = _supplied_context_problems(expected_engine_revision, expected_game_revision, artifact_root)
+    if problems:
+        return problems
     if schemas is None and globs is None:
         schemas, globs = discover()
     schemas = {} if schemas is None else schemas
@@ -192,11 +207,42 @@ def validate_tree(root, allow_pending, release, schemas=None, globs=None):
     if refusals:
         return refusals
 
-    ctx = Context(root=root, allow_pending=bool(allow_pending), release=bool(release))
+    ctx = Context(root=root, allow_pending=bool(allow_pending), release=bool(release),
+                  expected_engine_revision=expected_engine_revision,
+                  expected_game_revision=expected_game_revision, artifact_root=artifact_root)
     problems = []
     for rel in _all_files(root):
         problems.extend(_check_entry(root, rel, schemas, globs, ctx))
     return problems
+
+
+def _supplied_context_problems(engine, game, artifact_root):
+    problems = []
+    for field, value in (("expected_engine_revision", engine), ("expected_game_revision", game)):
+        if value is not None and (not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{40}", value) is None):
+            problems.append("context: %s must be 40 lowercase hex digits" % field)
+    if artifact_root is not None:
+        try:
+            valid = (isinstance(artifact_root, (str, os.PathLike)) and
+                     isinstance(os.fspath(artifact_root), str) and bool(os.fspath(artifact_root)) and
+                     os.path.isdir(artifact_root))
+        except (TypeError, ValueError, OSError):
+            valid = False
+        if not valid:
+            problems.append("context: artifact_root must be a nonempty existing directory")
+    return problems
+
+
+def _revision_arg(value):
+    if re.fullmatch(r"[0-9a-f]{40}", value) is None:
+        raise argparse.ArgumentTypeError("revision must be 40 lowercase hex digits")
+    return value
+
+
+def _artifact_root_arg(value):
+    if not value or not os.path.isdir(value):
+        raise argparse.ArgumentTypeError("artifact root must be a nonempty existing directory")
+    return os.path.abspath(value)
 
 
 def _build_parser():
@@ -216,6 +262,10 @@ def _build_parser():
         action="store_true",
         help="release gate: refuse pending entries and set release=True for validators",
     )
+    parser.add_argument("--expected-engine-revision", type=_revision_arg)
+    parser.add_argument("--expected-game-revision", type=_revision_arg)
+    parser.add_argument("--artifact-root", type=_artifact_root_arg,
+                        help="capture store containing sha256/<capture_sha256>")
     return parser
 
 
@@ -250,6 +300,9 @@ def main(argv=None):
         release=args.release,
         schemas=schemas,
         globs=globs,
+        expected_engine_revision=args.expected_engine_revision,
+        expected_game_revision=args.expected_game_revision,
+        artifact_root=args.artifact_root,
     )
     if problems:
         for line in sorted(problems):
