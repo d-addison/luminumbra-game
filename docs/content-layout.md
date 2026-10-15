@@ -151,8 +151,8 @@ the pin.
 
 The `cave_dense` preset export supersedes that preset baseline with revision 7;
 see [distant-world scenes](distant-world-scenes.md#the-cave_dense-preset) for its
-engine identity and file hash. Historical traversal workloads retain their
-frozen revision 6 fixtures and pins.
+canonical preset checksum and file hash. Historical traversal workloads retain
+their frozen revision 6 fixtures and pins.
 
 H1 species and biome content instead use the separately reviewed S5/S6 inventory
 pin `4c15419e9ba064c94e2933df73106991d92f1623` in
