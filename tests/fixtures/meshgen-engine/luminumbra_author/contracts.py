@@ -6,7 +6,9 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import stat
 import uuid
+from . import file_io
 
 ASSET = "luminumbra.authoring.asset.v1"
 RECEIPT = "luminumbra.authoring.receipt.v1"
@@ -59,8 +61,15 @@ def parse_json(data):
     return result
 
 
+def _open_reader(path):
+    try:
+        return file_io.open_regular_reader(path)
+    except ValueError as error:
+        raise Refusal("file.invalid", str(error)) from error
+
+
 def read_bounded(path, limit):
-    with Path(path).open("rb") as stream:
+    with _open_reader(path) as stream:
         data = stream.read(limit + 1)
     require(len(data) <= limit, "file.limit", "File exceeds this profile's size limit.")
     return data
@@ -72,21 +81,27 @@ def read_json(path):
 
 def file_digest(path):
     checksum = hashlib.sha256()
-    with Path(path).open("rb") as stream:
+    with _open_reader(path) as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             checksum.update(block)
     return checksum.hexdigest()
 
 
 def atomic_json(path, value):
-    path = Path(path)
+    try:
+        path = file_io.safe_path(path)
+    except ValueError as error:
+        raise Refusal("file.publication", str(error)) from error
     temp = path.with_name(".tmp-" + uuid.uuid4().hex)
     try:
         with temp.open("xb") as stream:
             stream.write(canonical(value) + b"\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temp, path)
+        try:
+            file_io.replace_file(temp, path)
+        except ValueError as error:
+            raise Refusal("file.publication", str(error)) from error
     finally:
         temp.unlink(missing_ok=True)
 
@@ -96,6 +111,20 @@ def keys(value, required, optional=()):
     require(set(required) <= value.keys(), "schema.required", "Required field is missing.")
     unknown = value.keys() - set(required) - set(optional)
     require(not unknown, "schema.unknown_field", f"Unregistered fields: {sorted(unknown)}")
+
+
+def path_is_link(path, info=None):
+    """Recognize symlinks and all Windows reparse points, including junctions."""
+    if info is None:
+        try:
+            info = Path(path).lstat()
+        except FileNotFoundError:
+            return False
+    return (stat.S_ISLNK(info.st_mode)
+            or bool(getattr(info, "st_file_attributes", 0)
+                    & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+            or (path is not None and hasattr(os.path, "isjunction") and os.path.isjunction(path))
+            or (path is not None and hasattr(Path(path), "is_junction") and Path(path).is_junction()))
 
 
 def relative_path(root, name):
@@ -109,7 +138,7 @@ def relative_path(root, name):
     path = root
     for part in parts:
         path /= part
-        require(not path.is_symlink() and not (hasattr(path, "is_junction") and path.is_junction()),
+        require(not path_is_link(path),
                 "path.symlink", "Source/state symlinks and junctions are unsupported.", name)
     require(path.is_file() and path.resolve().is_relative_to(root),
             "path.missing", "File does not exist inside its declared root.", name)
@@ -144,9 +173,15 @@ def validate_asset(value):
             and isinstance(exporter["sha256"], str) and SHA.fullmatch(exporter["sha256"]),
             "exporter.identity", "Record the exporter identity and SHA-256.")
     settings = value.get("settings", {})
-    keys(settings, (), ("emit_lods",))
+    keys(settings, (), ("emit_lods", "max_tris"))
     require(type(settings.get("emit_lods", False)) is bool,
             "settings.invalid", "emit_lods must be a boolean.")
+    if "max_tris" in settings:
+        require(type(settings["max_tris"]) is int and 64 <= settings["max_tris"] <= 1_000_000,
+                "settings.invalid", "max_tris must be an integer in [64, 1000000].",
+                "settings.max_tris")
+        require(value["profile"] != PREFAB_PROFILE, "prefab.max_tris",
+                "Prefab triangle budgets need an aggregate/per-part contract.", "settings.max_tris")
     require(isinstance(value.get("annotations", {}), dict),
             "annotation.invalid", "Annotations must be an inert object.")
     canonical(value)
@@ -212,8 +247,8 @@ class Toolchain:
         from .meshgen_scripts import ScriptInventory
         self.verify()
         require(role in self.scripts, "config.pins_missing", "MG2 requires a pinned game script role.", role)
-        inventory = ScriptInventory(project_root, self.scripts[role])
-        inventory.verify()
-        inventory.diagnose()
-        return {"path": inventory.entry, "sha256": self.scripts[role]["sha256"],
-                "modules": dict(self.scripts[role].get("modules", {}))}
+        with ScriptInventory(project_root, self.scripts[role]) as inventory:
+            inventory.verify()
+            inventory.diagnose()
+            return {"path": inventory.entry, "sha256": self.scripts[role]["sha256"],
+                    "modules": dict(self.scripts[role].get("modules", {}))}
