@@ -30,6 +30,13 @@ identity `16636010052247870746`. Its emitted text equals the committed
 `content/workloads/traversal/surface-flight.traversal` and the engine fixture
 byte for byte.
 
+These workloads retain the frozen revision 6 preset contract. The fixtures
+`tests/fixtures/engine-default-preset-rev6.json` and
+`tests/fixtures/engine-caverns-preset-rev6.json` come from the engine's
+`worlds/atlas/presets-rev6/` directory and preserve the historical identity
+inputs. The unsuffixed preset fixtures track revision 7 for scene validation.
+The revision 7 `cave_dense` export does not repin these historical workloads.
+
 `cave-walk` pins the preset identity `ebf1507e76482151`, computed offline from the
 engine caverns preset. The native identity echo is the final check of that
 value. Its content identity is not yet known. Its path is recorded natively from

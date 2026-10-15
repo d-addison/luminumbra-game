@@ -1,6 +1,6 @@
 """Validators for distant-world presets, the scene set, and scene receipts.
 
-Presets are engine-format files in content/presets/<name>.json (schema_rev 6,
+Presets are engine-format files in content/presets/<name>.json (schema_rev 7,
 no added keys). Each preset has a sidecar content/presets/<name>.identity.json
 (luminumbra.game.preset-identity.v1) that holds the sha256 of the preset bytes
 and the preset identity token. The presets glob owns every file in
@@ -37,7 +37,7 @@ _WINDOWS_METADATA = os.name == "nt"
 PRESET_DIR = "content/presets"
 JSON_SUFFIX = ".json"
 IDENTITY_SUFFIX = ".identity.json"
-PRESET_REV = 6
+PRESET_REV = 7
 IDENTITY_SCHEMA = "luminumbra.game.preset-identity.v1"
 IDENTITY_KEYS = frozenset(("schema", "preset", "file_sha256", "preset_identity"))
 ENGINE_PRESETS = frozenset(("default", "caverns", "mountains", "archipelago"))
@@ -676,7 +676,7 @@ def _check_preset(path, text):
         _fail(path, "file name must not be a reserved Windows device name")
     schema.check_keys(obj, PRESET_KEYS, set(), path)
     if not _is_int(obj["schema_rev"]) or obj["schema_rev"] != PRESET_REV:
-        _fail(path, "schema_rev must be 6")
+        _fail(path, "schema_rev must be %d" % PRESET_REV)
     for key in ("name", "description"):
         if not _is_text(obj[key]):
             _fail(path, "%s must be a non-empty string" % key)

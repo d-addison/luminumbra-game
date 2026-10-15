@@ -22,7 +22,11 @@ to its station.
 
 ## The cave_dense preset
 
-`content/presets/cave_dense.json` is an engine-format preset at `schema_rev` 6.
+`content/presets/cave_dense.json` is byte-identical to the engine's
+`worlds/atlas/presets/cave_dense.json` at `schema_rev` 7.
+Island masking, biome relief and cliffs are enabled, and hydro uses four
+iterations. This preset export supersedes the revision 6 baseline; frozen
+revision 6 traversal workloads retain their historical pins.
 It has the same key set as `caverns`, with no added keys. Only these values
 differ from `caverns`, apart from `name` and `description`:
 
@@ -38,7 +42,7 @@ the loader would clamp, and requires these three values exactly for
 
 Every exported preset must have exactly the four top-level keys `name`,
 `description`, `schema_rev` and `generation_params`, with a non-empty
-`generation_params`. Under `generation_params` the validator checks a shape table
+`generation_params` and integer `schema_rev` 7. Under `generation_params` the validator checks a shape table
 (`PRESET_SHAPE` in `tools/validators/scene.py`) written from the two engine
 fixtures, `tests/fixtures/engine-caverns-preset.json` and
 `tests/fixtures/engine-default-preset.json`. A key outside the union of the two
@@ -71,20 +75,30 @@ are exactly these three values plus `name` and `description`.
 
 ### Identity sidecar
 
-The preset identity is the 16-hex-digit FNV-1a 64-bit hash of the canonical
-JSON of the preset object. It is not stored inside the preset file. It lives in
+The canonical preset checksum is FNV-1a 64-bit over the compact, key-sorted,
+UTF-8 JSON of the parsed preset, formatted as 16 lowercase hex digits. It equals
+the engine's `StableChecksum` of the parsed preset, reported by the render
+benchmark as `preset_identity`; optional saved-world metadata `presetIdentity`
+uses the same checksum. For `cave_dense`, this checksum is
+`5d081f382b2d5d0d`; its file SHA-256 is
+`4b7c31ac3354db8921aea738749488525da6cb4d122a982c556a797b4ec82a1b`.
+The engine's `TerrainPresetContentHash` (which hashes an envelope of resolved
+defaults, normalized `schema_rev` and a dependency list) and the runtime
+Hello/lockstep/replay `preset_content_hash` (which also binds the biome table
+and structure files) are different values and are not pinned by this sidecar.
+The identity is not stored inside the preset file. It lives in
 `content/presets/cave_dense.identity.json`
 (`luminumbra.game.preset-identity.v1`) with four keys:
 
 - `schema`: the schema id;
 - `preset`: the preset name, which must equal the file stem;
 - `file_sha256`: the sha256 of the preset file bytes;
-- `preset_identity`: the identity token of the parsed preset.
+- `preset_identity`: the canonical preset checksum of the parsed preset.
 
 To recompute the identity of the preset file, run from the repository root:
 
 ```
-python3 -I tools/traversal_tool.py identity content/presets/cave_dense.json
+python3 -I -B tools/traversal_tool.py identity content/presets/cave_dense.json
 ```
 
 Then update both sidecar fields to match. The validator recomputes both and
@@ -233,7 +247,8 @@ repository asserts that `cave_dense` has more surface cave openings than
 
 - `scene_set` is `distant-world`, and `station` names a station, control or
   coverage row of the committed scene set;
-- `preset_identity` equals the identity sidecar of the station's preset (engine
+- `preset_identity` is the render benchmark's canonical preset checksum and
+  equals the identity sidecar of the station's preset (engine
   presets `default`, `caverns`, `mountains` and `archipelago` have no sidecar and
   are skipped);
 - the numeric fields and the qualification rules above;
@@ -359,7 +374,7 @@ command is not named at the baseline has no command and stays open.
 | Station and control poses | no command named at the baseline | a pose per row | every row has a pose and status discovered; the arch-8km and horizon-16km cases are recorded | NEEDS-NATIVE-RUN (no command yet) |
 | Cave-count oracle | the discovery probe above, `caverns` and `cave_dense` in the fixed window | counts C and D, the rule outcome | both counts recorded; recording thresholds in the strict scene schema remains a separate unresolved decision | BLOCKED (counting instrument not available) |
 | Qualification of each row, profile and display | `FarLodHorizon` per-row evidence is not available | one scene receipt per row, profile and display | each receipt numerically qualified and carries an exact matching accepted or waived-with-reason disposition | BLOCKED (engine instrumentation; engine acceptance workstream) |
-| Identity echo for cave_dense | no command named at the baseline | the engine's reported identity for `cave_dense` | the reported identity equals the sidecar `preset_identity` | NEEDS-NATIVE-RUN (no command yet) |
+| Identity echo for cave_dense | no command named at the baseline | the render benchmark's `preset_identity` (canonical preset checksum) for `cave_dense` | the reported checksum equals the sidecar `preset_identity` | NEEDS-NATIVE-RUN (no command yet) |
 | Engine copy of the preset | `python3 -I tools/export_engine_content.py --out DIR`, then the engine copy, then `python3 -I tools/export_engine_content.py --check ENGINE_ROOT` | exported manifest and check output | `--check` exits 0 against the engine tree | PENDING engine pull request |
 | Release gate | `python3 -I tools/validate_content.py --root . --release --expected-engine-revision ENGINE_SHA --expected-game-revision MEASURED_GAME_SHA --artifact-root CAPTURE_ROOT` | validator output | exits 0 with no scene problems; all rows discovered and qualified | blocked until the rows above are complete |
 

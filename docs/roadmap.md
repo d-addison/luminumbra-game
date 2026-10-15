@@ -115,8 +115,10 @@ imply host migration, matchmaking or private Steam relay availability.
 
 Software releases remain source-only. Art packs are separately versioned game
 content. Private recordings, Steam payloads and private previews remain outside
-public packs. Preset revision 6, LMR1 v2, FSD2 payload v3, canonical in-memory
-serialization, terrain-quality assertions and default-off policies are preserved;
+public packs. Preset exports use revision 7 and the engine's enabled terrain
+defaults; frozen traversal workloads retain revision 6 and historical pins.
+LMR1 v2, FSD2 payload v3, canonical in-memory serialization, terrain-quality
+assertions and other default-off policies are preserved;
 obsolete-world migration and legacy loading are not planned.
 
 ## Work-package index

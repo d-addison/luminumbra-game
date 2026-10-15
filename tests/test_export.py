@@ -117,6 +117,7 @@ class ExportTests(unittest.TestCase):
         digest, mapped = lines[0].split("  ")
         self.assertEqual(mapped, _MAPPED)
         self.assertEqual(digest, _sha256(_PRESETS / "cave_dense.json"))
+        self.assertEqual(digest, "4b7c31ac3354db8921aea738749488525da6cb4d122a982c556a797b4ec82a1b")
 
     def test_out_writes_byte_identical_files_at_mapped_path(self):
         out_dir = self.tmp / "export"
@@ -307,7 +308,7 @@ class ExportTests(unittest.TestCase):
     def _ghost_root(self, generation_params):
         """A temporary root whose content/presets holds a valid-looking preset named ghost."""
         root = self._content_copy("ghost")
-        obj = {"name": "Ghost", "description": "A test preset", "schema_rev": 6, "generation_params": generation_params}
+        obj = {"name": "Ghost", "description": "A test preset", "schema_rev": 7, "generation_params": generation_params}
         text = json.dumps(obj, indent=2) + "\n"
         presets = root / "content" / "presets"
         _write(presets / "ghost.json", text)

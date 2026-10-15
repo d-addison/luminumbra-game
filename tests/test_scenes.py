@@ -543,7 +543,7 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(raw).hexdigest(), sidecar["file_sha256"])
         recomputed = identity.preset_identity(identity.loads_strict(self.preset_text))
         self.assertEqual(recomputed, sidecar["preset_identity"])
-        self.assertEqual(sidecar["preset_identity"], "e70158a4777ee36b")
+        self.assertEqual(sidecar["preset_identity"], "5d081f382b2d5d0d")
 
     def test_exponent_token_refused(self):
         text = self.preset_text.replace("0.54", "5.4e-1", 1)
@@ -590,12 +590,14 @@ class PresetTests(unittest.TestCase):
             self.assertFalse(scene.is_reserved_stem(stem), stem)
 
     def test_duplicate_key_refused(self):
-        text = self.preset_text.replace('"schema_rev": 6', '"schema_rev": 6, "schema_rev": 6', 1)
+        text = self.preset_text.replace('"schema_rev": 7', '"schema_rev": 7, "schema_rev": 7', 1)
         _assert_problem(self, self._check(text), "duplicate key")
 
     def test_wrong_schema_rev_refused(self):
-        text = self.preset_text.replace('"schema_rev": 6', '"schema_rev": 5', 1)
-        _assert_problem(self, self._check(text), "schema_rev must be 6")
+        for revision in ("5", "6", "8", "7.0", "true"):
+            with self.subTest(revision=revision):
+                text = self.preset_text.replace('"schema_rev": 7', '"schema_rev": ' + revision, 1)
+                _assert_problem(self, self._check(text), "schema_rev must be 7")
 
     def test_sidecar_file_sha256_mismatch_refused(self):
         sidecar = json.loads(self.sidecar_text)
@@ -791,7 +793,7 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(self._check(text, _SIDECAR_PATH), ["content/presets/cave_dense.identity.json: json nesting is too deep"])
 
     def _raw_ghost_text(self, generation_params):
-        obj = {"name": "Ghost", "description": "A test preset", "schema_rev": 6, "generation_params": generation_params}
+        obj = {"name": "Ghost", "description": "A test preset", "schema_rev": 7, "generation_params": generation_params}
         return json.dumps(obj, indent=2) + "\n"
 
     def _ghost_text(self, overrides):
@@ -869,7 +871,7 @@ _RECEIPT_BASE = {
     "outer_edge": False,
     "capture_sha256": _CAPTURE_HASH,
     "scene_identity": "cave-mouth-2km.quality",
-    "preset_identity": "e70158a4777ee36b",
+    "preset_identity": "5d081f382b2d5d0d",
     "content_identity": "16636010052247870746",
     "adapter": "NVIDIA GeForce RTX 5070 Ti",
     "engine_revision": "1" * 40,

@@ -25,7 +25,7 @@ _FIXTURE_BYTES = (_FIXTURES / "engine-surface-flight.traversal").read_bytes()
 _WORKLOAD_PATH = "content/workloads/surface-flight.json"
 _TRAVERSAL_PATH = "content/workloads/traversal/surface-flight.traversal"
 _RECEIPT_PATH = "content/receipts/receipt-01.json"
-_CAVERNS_PATH = _FIXTURES / "engine-caverns-preset.json"
+_CAVERNS_PATH = _FIXTURES / "engine-caverns-preset-rev6.json"
 
 
 def _surface_flight():
