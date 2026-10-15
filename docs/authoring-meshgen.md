@@ -158,7 +158,7 @@ stays game-owned. G1 does not claim those hooks are implemented.
 
 [`test_meshgen_project.py`](../tests/test_meshgen_project.py) is discovered by the
 existing Linux/Windows stdlib CI lane. It consumes an exact, hash-pinned E1
-fixture from engine commit `4a01f6d46a83c0e59503c3cb388ec3fbb04dc52a`, including
+fixture from engine commit `b1f65fc2666d74a45f7f6f2bc92febd2fa09d705`, including
 the packaged schemas/defaults, resolver and real `check-config` CLI. See the
 [fixture provenance](../tests/fixtures/meshgen-engine/README.md). Missing or
 changed fixture bytes fail before import; no engine checkout, network or skip
