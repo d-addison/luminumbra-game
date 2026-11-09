@@ -1,6 +1,7 @@
 """Offline G1 contracts against exact E1 bytes; no Blender or model execution."""
 import ast
 from copy import deepcopy
+import errno
 import hashlib
 import importlib.util
 import json
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 import zipapp
@@ -51,6 +53,7 @@ verify_engine_fixture(ENGINE)
 sys.path.insert(0, str(ENGINE))
 from luminumbra_author import meshgen_config as config  # noqa: E402
 from luminumbra_author import meshgen_registry as registry  # noqa: E402
+from luminumbra_author import locking, service  # noqa: E402
 from luminumbra_author.contracts import Refusal, Toolchain, parse_json  # noqa: E402
 from luminumbra_author.meshgen_contracts import packaged_schemas  # noqa: E402
 from luminumbra_author.meshgen_scripts import ScriptInventory  # noqa: E402
@@ -59,6 +62,367 @@ sys.path.pop(0)
 
 def read_project():
     return config.load_document(PROJECT / "meshgen.config.json")
+
+
+class FixtureRecoveryTests(unittest.TestCase):
+    """Exercise the pinned service without executing a compiler or waiting."""
+
+    def setUp(self):
+        scratch = ROOT / ".test-tmp"
+        scratch.mkdir(exist_ok=True)
+        temporary = tempfile.TemporaryDirectory(dir=scratch)
+        self.addCleanup(temporary.cleanup)
+        self.project = Path(temporary.name)
+        processor = self.project / "processor.txt"
+        processor.write_bytes(b"Compiler stand-in, never executed.")
+        self.toolchain = self.project / "toolchain.json"
+        service.atomic_json(self.toolchain, {
+            "schema": "luminumbra.authoring.toolchain.v1", "id": "test.compiler",
+            "processor": processor.name, "files": {processor.name: sha(processor.read_bytes())}})
+        owner = self.open_service()
+        self.state = owner.root
+        owner.close()
+
+    def open_service(self):
+        owner = service.BuildService(self.project, self.toolchain)
+        self.addCleanup(owner.close)
+        return owner
+
+    def assert_busy(self):
+        with self.assertRaises(Refusal) as caught:
+            self.open_service()
+        self.assertEqual(caught.exception.finding["rule_id"], "session.busy")
+
+    def interrupted_job(self, job_id="1" * 32):
+        directory = self.state / "jobs" / job_id
+        directory.mkdir()
+        service.atomic_json(directory / "receipt.json", {
+            "schema": service.RECEIPT, "mode": "NATIVE", "job_id": job_id,
+            "status": "compiling", "findings": []})
+        (directory / "source.data").write_bytes(b"Preserved source")
+        (directory / "outputs").mkdir()
+        (directory / "outputs/partial.data").write_bytes(b"Partial output")
+        return directory
+
+    def pending_intent(self, directory):
+        archived = self.state / "quarantine/20000101T000000Z" / directory.name
+        archived.parent.mkdir(parents=True, exist_ok=True)
+        intent = self.state / "quarantine-pending.json"
+        service.atomic_json(intent, {"job_id": directory.name, "container": archived.parent.name})
+        return intent, archived
+
+    @staticmethod
+    def files(directory):
+        # Test trees contain at most three jobs with three small files each.
+        # Never read the mandatory Windows lock range through another handle.
+        return {path.relative_to(directory): path.read_bytes()
+                for path in directory.rglob("*") if path.name != "session.lock" and path.is_file()}
+
+    def assert_recovered(self, owner, directory, archived, evidence):
+        result = owner.status(directory.name)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual([finding["rule_id"] for finding in result["findings"]], ["job.orphaned"])
+        self.assertEqual(self.files(archived), evidence)
+        self.assertEqual(self.files(directory), {Path("receipt.json"): (directory / "receipt.json").read_bytes()})
+        self.assertFalse((self.state / "quarantine-pending.json").exists())
+        self.assertEqual(list((self.state / "quarantine").glob("*/" + directory.name)), [archived])
+        return result
+
+    def test_pending_quarantine_replays_each_interruption_with_exclusive_ownership(self):
+        for index, phase in enumerate(("before_move", "after_move", "after_save"), 1):
+            with self.subTest(phase=phase):
+                directory = self.interrupted_job(f"{index:032x}")
+                evidence = self.files(directory)
+                intent, archived = self.pending_intent(directory)
+                if phase != "before_move":
+                    directory.rename(archived)
+                if phase == "after_save":
+                    directory.mkdir()
+                    receipt = json.loads(evidence[Path("receipt.json")])
+                    receipt.update(status="failed", findings=[])
+                    service.atomic_json(directory / "receipt.json", receipt)
+                before = self.files(self.state)
+                holder = locking.ProjectLock(self.project, self.state / "session.lock")
+                try:
+                    self.assert_busy()
+                    self.assertEqual(self.files(self.state), before)
+                finally:
+                    holder.close()
+                owner = self.open_service()
+                result = self.assert_recovered(owner, directory, archived, evidence)
+                self.assert_busy()
+                owner.close()
+                reopened = self.open_service()
+                self.assertEqual(self.assert_recovered(reopened, directory, archived, evidence), result)
+                self.assert_busy()
+                reopened.close()
+                self.assertFalse(intent.exists())
+
+    def test_failed_receipt_replay_preserves_intent_evidence_and_releases_lock(self):
+        directory = self.interrupted_job()
+        evidence = self.files(directory)
+        intent, archived = self.pending_intent(directory)
+        directory.rename(archived)
+        pending = intent.read_bytes()
+        write = service.atomic_json
+
+        def fail_receipt(path, value):
+            if path == directory / "receipt.json":
+                raise OSError("Injected receipt publication failure")
+            return write(path, value)
+
+        with mock.patch.object(service, "atomic_json", side_effect=fail_receipt):
+            for _ in range(3):
+                with self.assertRaisesRegex(OSError, "Injected receipt publication failure"):
+                    self.open_service()
+                self.assertEqual(intent.read_bytes(), pending)
+                self.assertEqual(self.files(archived), evidence)
+                probe = locking.ProjectLock(self.project, self.state / "session.lock")
+                probe.close()
+        owner = self.open_service()
+        self.assert_recovered(owner, directory, archived, evidence)
+        self.assert_busy()
+
+    def test_invalid_or_partial_intent_refuses_without_changing_evidence(self):
+        directory = self.interrupted_job()
+        intent, archived = self.pending_intent(directory)
+        cases = (b'{"job_id":', b'[]', b'{}',
+                 json.dumps({"job_id": directory.name, "container": "../outside"}).encode(),
+                 json.dumps({"job_id": directory.name, "container": 1}).encode(),
+                 json.dumps({"job_id": "2" * 32, "container": archived.parent.name}).encode())
+        for data in cases:
+            with self.subTest(data=data):
+                intent.write_bytes(data)
+                before = self.files(self.state)
+                with self.assertRaises(ValueError) as caught:
+                    self.open_service()
+                if data == cases[0]:
+                    self.assertIsInstance(caught.exception, json.JSONDecodeError)
+                else:
+                    self.assertIsInstance(caught.exception, Refusal)
+                    self.assertEqual(caught.exception.finding["rule_id"], "state.invalid")
+                self.assertEqual(self.files(self.state), before)
+                probe = locking.ProjectLock(self.project, self.state / "session.lock")
+                probe.close()
+
+    def test_unreadable_intent_refuses_and_releases_lock(self):
+        directory = self.interrupted_job()
+        intent, _ = self.pending_intent(directory)
+        before = self.files(self.state)
+        read = service.read_json
+        error = PermissionError(errno.EACCES, "Intent cannot be read")
+
+        def read_intent(path):
+            if path == intent:
+                raise error
+            return read(path)
+
+        with mock.patch.object(service, "read_json", side_effect=read_intent):
+            with self.assertRaises(PermissionError) as caught:
+                self.open_service()
+        self.assertIs(caught.exception, error)
+        self.assertEqual(self.files(self.state), before)
+        with self.open_service():
+            self.assert_busy()
+
+    def test_windows_legacy_mutex_coordinates_service_acquisition_and_release(self):
+        # Portable Win32 API fault injection, as in the engine's locking tests.
+        # The real fixture owns all service, file-lock and marker lifecycle logic.
+        handles, streams, events, last_error = {}, [], [], [0]
+        kernel = SimpleNamespace(CreateMutexW=mock.Mock(), CloseHandle=mock.Mock())
+        # Keep native handle conversion available to Windows toolchain readers.
+        runtime = SimpleNamespace(**vars(sys.modules.get("msvcrt", SimpleNamespace())))
+        runtime.LK_NBLCK, runtime.LK_UNLCK, runtime.locking = 1, 0, mock.Mock()
+
+        def create_mutex(_security, _owned, name):
+            last_error[0] = 183 if name in handles.values() else 0
+            handle = len(kernel.CreateMutexW.call_args_list)
+            handles[handle] = name
+            return handle
+
+        def close_handle(handle):
+            events.append("marker.close")
+            del handles[handle]
+            return True
+
+        def lock_byte(descriptor, mode, size):
+            self.assertEqual(os.lseek(descriptor, 0, os.SEEK_CUR), 0)
+            self.assertEqual(size, 1)
+            events.append("file.unlock" if mode == runtime.LK_UNLCK else "file.lock")
+
+        def project_lock(project, lockfile):
+            backend = locking.WindowsFileLock(project)
+            acquire = backend.acquire
+
+            def capture(stream):
+                streams.append(stream)
+                return acquire(stream)
+
+            with mock.patch.object(backend, "acquire", side_effect=capture):
+                return locking.ProjectLock(project, lockfile, backend=backend)
+
+        kernel.CreateMutexW.side_effect = create_mutex
+        kernel.CloseHandle.side_effect = close_handle
+        runtime.locking.side_effect = lock_byte
+        with mock.patch.object(locking.ctypes, "WinDLL", return_value=kernel, create=True), \
+             mock.patch.object(locking.ctypes, "get_last_error", side_effect=lambda: last_error[0], create=True), \
+             mock.patch.dict(sys.modules, msvcrt=runtime), \
+             mock.patch.object(service, "ProjectLock", side_effect=project_lock):
+            name = "Local\\LuminumbraAuthorBuild_" + sha(os.path.normcase(str(self.project.resolve())).encode("utf-8"))
+            legacy = kernel.CreateMutexW(None, True, name)
+            self.assert_busy()
+            self.assertTrue(streams[-1].closed)
+            self.assertEqual(handles, {legacy: name})
+            kernel.CloseHandle(legacy)
+            with self.open_service() as owner:
+                self.assertFalse(streams[-1].closed)
+                self.assert_busy()
+                self.assertTrue(streams[-1].closed)
+                self.assertEqual(len(handles), 1)
+                self.assertEqual(kernel.CreateMutexW.call_args_list[1:], [mock.call(None, False, name)] * 3)
+                owner.close()
+                self.assertEqual(events[-2:], ["file.unlock", "marker.close"])
+            self.assertTrue(all(stream.closed for stream in streams))
+            self.assertEqual(handles, {})
+            runtime.locking.assert_called_with(mock.ANY, runtime.LK_UNLCK, 1)
+            with self.open_service():
+                self.assertEqual(len(handles), 1)
+            self.assertEqual(handles, {})
+            self.assertEqual([call.args[1] for call in runtime.locking.call_args_list],
+                             [runtime.LK_NBLCK] * 3 + [runtime.LK_UNLCK, runtime.LK_NBLCK, runtime.LK_UNLCK])
+
+    def test_transient_windows_quarantine_errors_retry_same_destination(self):
+        rename = Path.rename
+        for index, code in enumerate((5, 32, 33), 1):
+            with self.subTest(winerror=code):
+                directory = self.interrupted_job(f"{index:032x}")
+                evidence = self.files(directory)
+                _, archived = self.pending_intent(directory)
+                error = PermissionError(errno.EACCES, "Directory is held")
+                error.winerror = code
+                attempts = []
+
+                def move(path, target):
+                    if path == directory:
+                        attempts.append(target)
+                        self.assertLessEqual(len(attempts), 3)
+                        if len(attempts) <= 2:
+                            raise error
+                    return rename(path, target)
+
+                with mock.patch.object(Path, "rename", move), \
+                     mock.patch.object(service.time, "monotonic", return_value=0), \
+                     mock.patch.object(service.time, "sleep") as sleep:
+                    owner = self.open_service()
+                self.assertEqual(attempts, [archived] * 3)
+                self.assertEqual(sleep.call_args_list, [mock.call(0.05)] * 2)
+                self.assert_recovered(owner, directory, archived, evidence)
+                owner.close()
+
+    def test_persistent_quarantine_error_expires_and_releases_lock_for_replay(self):
+        directory = self.interrupted_job()
+        evidence = self.files(directory)
+        intent, archived = self.pending_intent(directory)
+        before = self.files(self.state)
+        rename = Path.rename
+        error = PermissionError(errno.EACCES, "Directory remains held")
+        error.winerror = 32
+        attempts, ticks = [], [0]
+
+        def move(path, target):
+            if path == directory:
+                attempts.append(target)
+                self.assertLessEqual(len(attempts), 201, "Recovery exceeded its ten-second budget")
+                raise error
+            return rename(path, target)
+
+        def advance(delay):
+            self.assertAlmostEqual(delay, 0.05)
+            ticks[0] += 1
+            self.assertLessEqual(ticks[0], 200)
+
+        with mock.patch.object(Path, "rename", move), \
+             mock.patch.object(service.time, "monotonic", side_effect=lambda: ticks[0] / 20), \
+             mock.patch.object(service.time, "sleep", side_effect=advance):
+            with self.assertRaises(OSError) as caught:
+                self.open_service()
+        self.assertIs(caught.exception, error)
+        self.assertEqual(attempts, [archived] * 201)
+        self.assertEqual(ticks[0], 200)  # Ten simulated seconds; no real sleeping.
+        self.assertEqual(self.files(self.state), before)
+        self.assertTrue(intent.exists())
+        probe = locking.ProjectLock(self.project, self.state / "session.lock")
+        probe.close()
+        owner = self.open_service()
+        self.assert_recovered(owner, directory, archived, evidence)
+        self.assert_busy()
+
+    def test_quarantine_jobs_share_one_recovery_deadline(self):
+        first = self.interrupted_job("1" * 32)
+        second = self.interrupted_job("2" * 32)
+        evidence = {path: self.files(path) for path in (first, second)}
+        _, archived = self.pending_intent(first)
+        rename = Path.rename
+        ticks, moved = [0], []
+        error = PermissionError(errno.EACCES, "Directory remains held")
+        error.winerror = 32
+
+        def move(path, target):
+            if path in evidence:
+                if path == first and ticks[0] >= 120:
+                    moved.append(path)
+                else:
+                    raise error
+            return rename(path, target)
+
+        def advance(delay):
+            self.assertAlmostEqual(delay, 0.05)
+            ticks[0] += 1
+            self.assertLessEqual(ticks[0], 200, "Each job must share the startup deadline")
+
+        with mock.patch.object(Path, "rename", move), \
+             mock.patch.object(service.time, "monotonic", side_effect=lambda: ticks[0] / 20), \
+             mock.patch.object(service.time, "sleep", side_effect=advance):
+            with self.assertRaises(OSError) as caught:
+                self.open_service()
+        self.assertIs(caught.exception, error)
+        self.assertEqual(ticks[0], 200)
+        self.assertEqual(moved, [first])
+        self.assertEqual(self.files(archived), evidence[first])
+        self.assertEqual(self.files(second), evidence[second])
+        transition = service.read_json(self.state / "quarantine-pending.json")
+        self.assertEqual(transition["job_id"], second.name)
+        with self.open_service() as owner:
+            for directory in (first, second):
+                destination = next((self.state / "quarantine").glob("*/" + directory.name))
+                self.assert_recovered(owner, directory, destination, evidence[directory])
+            self.assert_busy()
+
+    def test_unrelated_quarantine_errors_refuse_without_retry(self):
+        directory = self.interrupted_job()
+        self.pending_intent(directory)
+        before = self.files(self.state)
+        rename = Path.rename
+        for code in (None, 2, 80):
+            with self.subTest(winerror=code):
+                error = OSError(errno.EIO, "Unrelated rename failure")
+                if code is not None:
+                    error.winerror = code
+
+                def move(path, target):
+                    if path == directory:
+                        raise error
+                    return rename(path, target)
+
+                with mock.patch.object(Path, "rename", move), \
+                     mock.patch.object(service.time, "sleep", side_effect=AssertionError("Unexpected recovery retry")) as sleep:
+                    with self.assertRaises(OSError) as caught:
+                        self.open_service()
+                self.assertIs(caught.exception, error)
+                sleep.assert_not_called()
+                self.assertEqual(self.files(self.state), before)
+                probe = locking.ProjectLock(self.project, self.state / "session.lock")
+                probe.close()
 
 
 class ProjectConfigTests(unittest.TestCase):
