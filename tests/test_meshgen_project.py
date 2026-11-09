@@ -19,8 +19,8 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT = ROOT / "authoring/meshgen"
 ENGINE = ROOT / "tests/fixtures/meshgen-engine"
-REVISION = "b1f65fc2666d74a45f7f6f2bc92febd2fa09d705"
-INVENTORY_SHA256 = "433b6db53f5c4b6bef98b0b876e0f83af7131604e36ccb1a0c66c93c91016d2a"
+REVISION = "75a5a9ad82c8441fd3f138b186bb46280cfc22eb"
+INVENTORY_SHA256 = "d5c013d9fdb40055e6d7ab835d3e44a380e0228e7635c2004186cd1dcad83576"
 
 
 def sha(data):

@@ -158,11 +158,17 @@ stays game-owned. G1 does not claim those hooks are implemented.
 
 [`test_meshgen_project.py`](../tests/test_meshgen_project.py) is discovered by the
 existing Linux/Windows stdlib CI lane. It consumes an exact, hash-pinned E1
-fixture from engine commit `b1f65fc2666d74a45f7f6f2bc92febd2fa09d705`, including
+fixture from engine commit `75a5a9ad82c8441fd3f138b186bb46280cfc22eb`, including
 the packaged schemas/defaults, resolver and real `check-config` CLI. See the
 [fixture provenance](../tests/fixtures/meshgen-engine/README.md). Missing or
 changed fixture bytes fail before import; no engine checkout, network or skip
 is required. The snapshot is test-only; the engine remains authoritative.
+
+Engine PR #291 is already merged at this revision, including quarantine-intent
+recovery (`4bed032b`) and legacy-mutex coordination with bounded recovery retries
+(`832e36ef`). This refresh retains the bounded E1 contract inventory; it does not
+add the newer full engine meshgen service. Native Windows qualification remains
+separate, unclaimed work on the user's Blender 5.1.0 machine.
 
 The repository's schema validator registry covers `content/` and
 `docs/evidence/`. G1 files live under `authoring/` and ordinary docs, so the new
